@@ -36,13 +36,13 @@ def validate_heap_mb(heap_mb):
 
 
 def decompile(application, entry, cfr_jar=None, java="java", timeout=120, heap_mb=512,
-              decode_enum_switch=True):
+              decode_enum_switch=True, read_class=None):
     validate_heap_mb(heap_mb)
     executable, cfr_jar = _backend(cfr_jar, java, timeout)
     with tempfile.TemporaryDirectory(prefix="asc-cfr-") as temp:
         context = Path(temp) / "classes"
         output = Path(temp) / "source"
-        truncated = application.stage_context(entry, context)
+        truncated = application.stage_context(entry, context, read_class=read_class)
         if truncated:
             warnings.warn("Decompiler context reached 512 classes or 128 MiB; some types may be unresolved", RuntimeWarning)
         target = context / _safe_class_path(entry.name)
@@ -68,7 +68,7 @@ class BatchTimeout(ValueError):
 
 
 def decompile_batch(application, entries, cfr_jar=None, java="java", timeout=120,
-                    class_data=None, heap_mb=512, decode_enum_switch=True):
+                    class_data=None, heap_mb=512, decode_enum_switch=True, read_class=None):
     """Run selected classes in one CFR JVM; yield per-origin source or failure.
 
     Only explicitly selected roots are passed as arguments. Dependency context
@@ -82,7 +82,8 @@ def decompile_batch(application, entries, cfr_jar=None, java="java", timeout=120
     with tempfile.TemporaryDirectory(prefix="asc-cfr-batch-") as temp:
         context = Path(temp) / "classes"
         output = Path(temp) / "source"
-        if application.stage_contexts(entries, context, class_data=class_data):
+        if application.stage_contexts(entries, context, class_data=class_data,
+                                      read_class=read_class):
             warnings.warn("Decompiler context reached 512 classes or 128 MiB; some types may be unresolved", RuntimeWarning)
         command = [executable, f"-Xmx{heap_mb}m", "-jar", str(cfr_jar),
                    *[str(context / _safe_class_path(entry.name)) for entry in entries],

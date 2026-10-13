@@ -1,10 +1,11 @@
 """Bounded, resumable source export with per-origin output and JSONL evidence."""
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
+from contextlib import ExitStack
 import hashlib
 import json
 from pathlib import Path
 import tempfile
-from threading import Lock
+from threading import Lock, local
 
 from .application import _safe_class_path, safe_relative_path, entry_container
 from .decompiler import decompile, decompile_batch, BatchTimeout, validate_heap_mb
@@ -134,6 +135,16 @@ def export_sources(application, output, cfr_jar=None, java="java", timeout=120,
     config_hash = digest(json.dumps(config, sort_keys=True).encode())
 
     log_lock = Lock()
+    reader_lock = Lock()
+    worker_state = local()
+
+    def worker_reader():
+        if not hasattr(worker_state, "read"):
+            # One bounded archive cache per worker, shared by roots and context.
+            # ExitStack closes readers only after all executor jobs have stopped.
+            with reader_lock:
+                worker_state.read = reader_contexts.enter_context(application.class_reader())
+        return worker_state.read
 
     def commit(record):
         # Persist each completed class before the rest of its group can fail.
@@ -167,6 +178,7 @@ def export_sources(application, output, cfr_jar=None, java="java", timeout=120,
 
     def task(entries, is_resource):
         records = []
+        read = worker_reader()
 
         def publish(record):
             commit(record)
@@ -186,7 +198,8 @@ def export_sources(application, output, cfr_jar=None, java="java", timeout=120,
 
         def individual(item):
             try:
-                source = decompile(application, item[0], cfr_jar, java, timeout, **backend_options)
+                source = decompile(application, item[0], cfr_jar, java, timeout,
+                                   read_class=read, **backend_options)
             except Exception as exc:
                 source = exc
             finish(item, source)
@@ -200,6 +213,7 @@ def export_sources(application, output, cfr_jar=None, java="java", timeout=120,
                 iterator = iter(decompile_batch(application, [item[0] for item in items],
                                                cfr_jar, java, timeout,
                                                class_data={item[0].origin: item[2] for item in items},
+                                               read_class=read,
                                                **backend_options))
             except BatchTimeout as exc:
                 for item in items:
@@ -233,20 +247,19 @@ def export_sources(application, output, cfr_jar=None, java="java", timeout=120,
 
         prepared = []
         prepared_bytes = 0
-        with application.class_reader() as read:
-            for entry in entries:
-                record, data, target = prepare(entry, is_resource, read)
-                if target is None:
-                    publish(record)
-                elif is_resource:
-                    finish((entry, record, data, target), data)
-                else:
-                    if prepared and prepared_bytes + len(data) > MAX_BATCH_BYTES:
-                        flush(prepared)
-                        prepared = []
-                        prepared_bytes = 0
-                    prepared.append((entry, record, data, target))
-                    prepared_bytes += len(data)
+        for entry in entries:
+            record, data, target = prepare(entry, is_resource, read)
+            if target is None:
+                publish(record)
+            elif is_resource:
+                finish((entry, record, data, target), data)
+            else:
+                if prepared and prepared_bytes + len(data) > MAX_BATCH_BYTES:
+                    flush(prepared)
+                    prepared = []
+                    prepared_bytes = 0
+                prepared.append((entry, record, data, target))
+                prepared_bytes += len(data)
         if prepared:
             flush(prepared)
         return records
@@ -276,7 +289,7 @@ def export_sources(application, output, cfr_jar=None, java="java", timeout=120,
             for entry in application.resources({"java", "jsp", "jspx", "jspf", "tag", "tagx"}):
                 yield [entry], True
 
-    with manifest.open("a", encoding="utf-8", newline="\n") as log:
+    with ExitStack() as reader_contexts, manifest.open("a", encoding="utf-8", newline="\n") as log:
         for error in application.errors:
             commit(error)
             yield error

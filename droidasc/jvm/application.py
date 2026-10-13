@@ -1,7 +1,7 @@
 """Archive-directory inventory with lazy class reads and bounded nested spooling."""
 from dataclasses import dataclass
 from collections import deque, OrderedDict
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from itertools import groupby
 from pathlib import Path
 import tempfile
@@ -354,15 +354,16 @@ class JvmApplication:
             except ValueError as exc:
                 raise ValueError(f"{entry.origin}: {exc}") from exc
 
-    def stage_context(self, entry, destination, max_classes=512):
+    def stage_context(self, entry, destination, max_classes=512, read_class=None):
         """Stage a bounded dependency closure, favouring the selected class container.
 
         The context lets CFR resolve related classes without expanding every JAR.
         Ambiguous dependencies outside that container are omitted.
         """
-        return self.stage_contexts([entry], destination, max_classes)
+        return self.stage_contexts([entry], destination, max_classes, read_class=read_class)
 
-    def stage_contexts(self, entries, destination, max_classes=512, class_data=None):
+    def stage_contexts(self, entries, destination, max_classes=512, class_data=None,
+                       read_class=None):
         """Stage selected roots once, then their shared bounded dependencies.
 
         Required roots must fit the context; dependencies may be truncated.
@@ -379,7 +380,7 @@ class JvmApplication:
         required = {entry.origin for entry in entries}
         staged = set()
         staged_bytes = 0
-        with self.class_reader() as read:
+        with (self.class_reader() if read_class is None else nullcontext(read_class)) as read:
             while pending:
                 current = pending.popleft()
                 if current.name in staged:

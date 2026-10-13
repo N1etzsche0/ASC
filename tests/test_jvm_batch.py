@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from threading import Barrier
 import unittest
 from unittest.mock import patch
 import zipfile
@@ -171,7 +172,7 @@ class JvmBatchTests(unittest.TestCase):
                 archive.writestr("batch/Two.class", (self.classes / "batch/Two.class").read_bytes())
                 archive.writestr("batch/Invalid.class", b"invalid")
             with JvmApplication(bad, tolerant=True) as app:
-                def single(application, entry, *args):
+                def single(application, entry, *args, **kwargs):
                     ClassFile(application.read(entry))
                     return "class Two {}"
                 with patch("droidasc.jvm.exporter.decompile_batch", side_effect=ValueError("context failure")), \
@@ -228,6 +229,67 @@ class JvmBatchTests(unittest.TestCase):
             self.assertEqual(invoked.call_count, 1)
             self.assertIsInstance(results[0][1], str)
             self.assertIsInstance(results[1][1], ValueError)
+
+    def test_export_reader_reuses_archive_and_closes_after_failure_or_generator_close(self):
+        real_zip = zipfile.ZipFile
+        for mode in ("complete", "timeout", "generator-close"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temp, JvmApplication(self.jar) as app:
+                opened = []
+
+                def open_zip(*args, **kwargs):
+                    archive = real_zip(*args, **kwargs)
+                    opened.append(archive)
+                    return archive
+
+                def batch(application, entries, *args, class_data=None, read_class=None, **kwargs):
+                    if mode == "timeout":
+                        raise BatchTimeout("group timeout")
+                    with tempfile.TemporaryDirectory() as context:
+                        application.stage_contexts(entries, context, class_data=class_data,
+                                                   read_class=read_class)
+                    yield from self.fake_batch(application, entries, class_data=class_data)
+
+                with patch("droidasc.jvm.application.zipfile.ZipFile", side_effect=open_zip), \
+                        patch("droidasc.jvm.exporter.decompile_batch", side_effect=batch):
+                    iterator = export_sources(app, Path(temp) / "out", workers=1,
+                                              batch_size=2, resources=False)
+                    if mode == "generator-close":
+                        self.assertEqual(next(iterator)["status"], "ok")
+                        iterator.close()
+                    else:
+                        records = list(iterator)
+                        self.assertEqual(len(records), 4)
+                        expected = "error" if mode == "timeout" else "ok"
+                        self.assertTrue(all(record["status"] == expected for record in records))
+                self.assertEqual(len(opened), 1)
+                self.assertTrue(all(archive.fp is None for archive in opened))
+
+    def test_export_workers_have_separate_archive_handles(self):
+        real_zip = zipfile.ZipFile
+        with tempfile.TemporaryDirectory() as temp, JvmApplication(self.jar) as app:
+            opened = []
+            barrier = Barrier(2)
+
+            def open_zip(*args, **kwargs):
+                archive = real_zip(*args, **kwargs)
+                opened.append(archive)
+                return archive
+
+            def batch(application, entries, *args, class_data=None, read_class=None, **kwargs):
+                barrier.wait(timeout=10)
+                with tempfile.TemporaryDirectory() as context:
+                    application.stage_contexts(entries, context, class_data=class_data,
+                                               read_class=read_class)
+                yield from self.fake_batch(application, entries, class_data=class_data)
+
+            with patch("droidasc.jvm.application.zipfile.ZipFile", side_effect=open_zip), \
+                    patch("droidasc.jvm.exporter.decompile_batch", side_effect=batch):
+                records = list(export_sources(app, Path(temp) / "out", workers=2,
+                                              batch_size=2, resources=False))
+            self.assertEqual(len(records), 4)
+            self.assertTrue(all(record["status"] == "ok" for record in records))
+            self.assertEqual(len(opened), 2)
+            self.assertTrue(all(archive.fp is None for archive in opened))
 
     def test_invalid_batch_options_fail_before_backend(self):
         with tempfile.TemporaryDirectory() as temp, JvmApplication(self.jar) as app:
