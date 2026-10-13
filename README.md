@@ -141,14 +141,18 @@ destinations for concurrent export runs. See [bulk export](docs/JVM.md#bulk-sour
 For a large generated-code JAR, select an explicit heap and worker count:
 
 ```sh
-droidasc export application.jar --threads 8 --heap-mb 2048 --no-enum-switch \
-  --no-resources -o /path/to/large-export
+droidasc export application.jar --threads 8 --heap-mb 2048 --oom-heap-mb 8192 \
+  --no-enum-switch --no-resources -o /path/to/large-export
 ```
 
 This profile was measured on the public inputs below. Heap limits apply to each
-worker; `--no-enum-switch` trades reconstructed enum switches for lowered mapping
-expressions. Tune the worker count to the available memory. Use the same options
-when resuming, and use `getclass` to retry an exact class with different settings.
+worker. The optional `--oom-heap-mb 8192` retries an isolated Java heap failure
+once, after other CFR processes exit, and records recovery in the managed
+manifest. High-heap retries run serially; the maximum concurrent configured heap
+is `max(threads * heap_mb, oom_heap_mb)`, plus native/Python/cache memory. Changing
+the fallback heap invalidates resume. `--no-enum-switch` trades reconstructed enum
+switches for lowered mapping expressions. Tune the worker count to the available memory. Use the same options
+when resuming. A failed larger-heap retry still produces an error and exit 1.
 
 ### Analyze JSP, frameworks and reflection
 
@@ -209,18 +213,19 @@ current Android CLI expects an APK/ZIP container.
 
 Local validation on 2026-10-13, using Linux, OpenJDK 25.0.4 and CFR 0.152.
 The recorded regression and Android performance gates cover implementation
-commit `ea05ff1`, including export reader reuse, heap-setting and source-quality checks.
+commit `af31bd7`, including exclusive heap-failure recovery; source-diagnostic
+coverage was extended in `f5274d0`. Both use the Python matrix below.
 These are local checks, separate from GitHub Actions results.
 
 ### Regression and performance results
 
 | Check | Python 3.11.16 | Python 3.12.14 | Acceptance |
 | --- | ---: | ---: | --- |
-| Strict regression, including real CFR | 137 passed, no skips | 137 passed, no skips | All tests pass |
+| Strict regression, including real CFR | 142 passed, no skips | 142 passed, no skips | All tests pass |
 | Paired Android performance comparison | Passed | Passed | No material regression in 11 gated metrics |
-| Cold-process startup: internal median | 33.08 ms | 32.69 ms | At most 100 ms |
-| Cold-process startup: wall-time median | 64.70 ms | 63.52 ms | At most 250 ms |
-| Supplied DEX decompilation median | 50.40 ms | 48.50 ms | At most 88 ms |
+| Cold-process startup: internal median | 33.56 ms | 33.49 ms | At most 100 ms |
+| Cold-process startup: wall-time median | 65.07 ms | 65.30 ms | At most 250 ms |
+| Supplied DEX decompilation median | 50.80 ms | 49.90 ms | At most 88 ms |
 | Supplied DEX reference counts | All 16 metrics matched | All 16 metrics matched | Exact counts on every sample |
 
 The comparison used upstream development commit `e94ea6f` as the baseline,
@@ -255,44 +260,63 @@ JADX comparison and reproduction commands.
 
 ### Large public JAR results
 
-Two public Maven Central JARs were measured on Linux with Python 3.14.6,
-OpenJDK 25.0.4 and CFR 0.152. Export used eight workers, a 2 GiB heap per CFR
-process, `--no-enum-switch`, `--no-resources`, and automatic batch size 64.
-The Hive export covers `5f5ee68`; the larger AWS export covers `ea05ff1` with
-archive readers shared across batches and dependency staging.
+Two original Maven Central JARs were measured on Linux with Python 3.14.6,
+OpenJDK 25.0.4, CFR 0.152 and JADX 1.5.6. Both tools used CPU 0..7, eight
+workers and at most 16 GiB of concurrently configured Java heap. ASC used
+2 GiB per worker, an exclusive 8 GiB heap-failure retry, `--no-enum-switch`,
+`--no-resources`, and automatic batch size 64. JADX used a single 16 GiB JVM,
+`--config none --no-res -j 8` and its default code transformations.
+The repaired Hive ASC export covers `af31bd7`; AWS covers `f5274d0` with the
+same runtime code. Inventory rows retain the earlier measurements linked below.
 
 | Public JAR | Size | Selected class definitions | Inventory wall time | Inventory peak RSS |
 | --- | ---: | ---: | ---: | ---: |
 | Apache Hive `hive-exec:4.0.1` | 79.54 MiB | 38,481 | 0.598 s | 62.80 MiB |
 | AWS `aws-java-sdk-bundle:1.12.780` | 370.54 MiB | 173,906 | 2.659 s | 231.98 MiB |
 
-| JAR | Operation | Wall time | Sampled process-tree peak RSS | Result |
+| JAR | Tool / operation | Wall time | Sampled process-tree peak RSS | Output / status |
 | --- | --- | ---: | ---: | --- |
-| Hive | Full export | 601.49 s | 5,872.12 MiB | 38,480 outputs; one heap failure, exit 1 |
-| Hive | Resume | 106.94 s | 2,645.62 MiB | 38,480 reused; one failed retry, exit 1 |
-| AWS Bundle | Full export | 1,217.22 s | 5,212.05 MiB | 173,906 outputs; no class errors, exit 0 |
-| AWS Bundle | Resume | 83.38 s | 1,628.44 MiB | All 173,906 outputs reused, exit 0 |
+| Hive | ASC full export | 479.52 s | 5,590.67 MiB | 38,481 files; one recovered heap failure; exit 0 |
+| Hive | ASC resume | 18.95 s | 374.00 MiB | All 38,481 reused; no retries; exit 0 |
+| Hive | JADX default CLI | 151.33 s | 16,878.52 MiB | 14,641 files; method errors; exit 3 |
+| AWS Bundle | ASC full export | 1,200.47 s | 5,128.84 MiB | 173,906 files; exit 0 |
+| AWS Bundle | ASC resume | 83.43 s | 1,628.48 MiB | All 173,906 reused; exit 0 |
+| AWS Bundle | JADX default CLI (partial input) | 44.80 s | 16,675.92 MiB | 58,339 files; exit 0; incomplete input coverage |
+| AWS Bundle | JADX API with JDK ZIP reader (full input) | 301.01 s | 17,824.13 MiB | 154,944 files; exit 0 |
 
-Both exports passed manifest/output hash checks with zero mismatches. The Hive
-parser that failed at 2 GiB produced a separate source file through exact
-`getclass` selection at 8 GiB in 43.41 s; that recovery leaves the original export
-manifest and exit status intact. All 12,416 common AWS sources from the interrupted
-pre-cache trial matched the new export's source hashes.
+The Hive parser now recovers **inside the managed export** through one larger-heap
+retry. All 38,481 manifest/output hashes match, and the next identical resume
+reuses the recovered parser too. The prior 38,480 successful source hashes remain
+unchanged. AWS also reuses all 173,906 files with zero hash mismatches and zero
+retries; all source hashes match the earlier reader-reuse run. Old failed trials are retained in the detailed report as history.
 
-Source quality was checked separately from output-file coverage:
+JADX 1.5.6 default ZIP parsing reads only the first 65,535 entries of the AWS
+ZIP64 JAR: 64,307 of 173,906 class origins. Its 44.80 s result is incomplete.
+A separately labeled API adapter forces the existing JDK ZIP fallback in JADX, keeps
+security checks enabled, and verifies all 173,906 input origins with zero missing
+or unexpected classes. It uses the original JAR and unchanged JADX distribution.
+JADX merges/inlines classes, so Java-file counts are different output layouts,
+not directly comparable class-coverage counts.
 
-| Batch outputs | Files with failure markers | CFR failed-method comments / failure stubs | Files with structuring warnings / warning count |
+| Input / backend | Files with failure markers / marker hits | CFR structuring-warning files / hits | JADX warning files / hits |
 | --- | ---: | ---: | ---: |
-| Hive | 27 | 32 / 32 | 43 / 60 |
-| AWS Bundle | 8 | 10 / 10 | 6 / 8 |
+| Hive / ASC | 27 / 64 | 44 / 61 | — |
+| Hive / JADX default CLI | 55 / 86 | — | 1,249 / 6,170 |
+| AWS / ASC | 8 / 20 | 6 / 8 | — |
+| AWS / JADX API, full input | 8 / 8 | — | 1,546 / 17,332 |
 
-The separately recovered Hive parser adds one structuring warning. Comments and
-stubs can refer to the same method; marker totals are not distinct-method counts.
-Compilability and semantic equivalence were not tested. Each operation was
-measured once; these results do not establish a large-JAR speedup over another
-tool. Public downloads, checksums, raw-evidence locations and reproduction commands
-are in the [Hive validation](docs/JVM-LARGE-JAR-VALIDATION.md) and
-[AWS Bundle validation](docs/JVM-AWS-BUNDLE-VALIDATION.md) reports.
+Marker hits are text diagnostics, not distinct-method counts. JADX warnings also
+include naming collisions; CFR failure comments and stubs can describe the same
+method. Successful file generation and exit 0 do not guarantee complete methods.
+Compilability and semantic equivalence were not tested. Each operation was measured
+once, without a separate warmup, on a shared host; post-run quality checks are
+excluded from the reported tool time. RSS includes native/cache memory and may
+double-count shared pages or miss short peaks. These measurements do not establish
+an equal-quality or statistically significant speedup. See the
+[large-JAR ASC/JADX comparison and heap recovery](docs/JVM-LARGE-JAR-COMPARISON.md)
+for input checksums, precise settings, source diagnostics and reproduction commands;
+[Hive](docs/JVM-LARGE-JAR-VALIDATION.md) and
+[AWS](docs/JVM-AWS-BUNDLE-VALIDATION.md) preserve earlier trials.
 
 Multi-release JAR selection defaults to `--java-release 17`; use the same
 selection when resuming an export. Nested archives require bounded temporary

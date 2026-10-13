@@ -115,6 +115,7 @@ def main():
     return bool(report["run"]["returncode"] or report["run"]["timed_out"]
                 or report.get("inspection_error")
                 or report.get("input_coverage", {}).get("missing")
+                or report.get("input_coverage", {}).get("unexpected")
                 or report.get("outputs", {}).get("hash_mismatches"))
 
 

@@ -272,6 +272,8 @@ See [large public JAR validation](JVM-LARGE-JAR-VALIDATION.md) for a 38,481-clas
 full export, resume, heap-failure recovery and source-quality diagnostics.
 The [AWS SDK Bundle validation](JVM-AWS-BUNDLE-VALIDATION.md) uses a larger
 370.54 MiB input with 173,906 selected definitions and measures archive-reader reuse.
+See [large-JAR ASC/JADX comparison](JVM-LARGE-JAR-COMPARISON.md) for managed
+heap-failure recovery and complete-input measurements, including JADX's ZIP64 fallback.
 For module responsibilities and contributor guidance, see
 [JVM implementation structure](JVM-ARCHITECTURE.md).
 

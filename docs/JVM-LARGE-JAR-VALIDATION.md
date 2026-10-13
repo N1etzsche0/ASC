@@ -5,6 +5,9 @@
 本文记录实际全量导出、续跑和单类补导，不根据小样本推算全量速度。
 后续更大输入及读取器复用的验证见
 [AWS SDK Bundle 测试](JVM-AWS-BUNDLE-VALIDATION.md)。本页保留原 Hive 测量值。
+后续 `af31bd7` 已通过受管理的完整导出恢复这一堆不足错误，38,481 项
+全部成功，续跑全部复用，均为 exit 0。当前结果和真实 JADX 对比见
+[大型 JAR 对比与修复记录](JVM-LARGE-JAR-COMPARISON.md)；下文是旧配置历史。
 
 ## 输入与环境
 
