@@ -7,6 +7,7 @@ from pathlib import Path
 import platform
 import subprocess
 import sys
+import zipfile
 
 from benchmark_jvm_export import ROOT, measure
 from benchmark_jvm_large import inspect_outputs
@@ -19,6 +20,8 @@ def main():
     parser.add_argument("--tool", choices=("asc", "jadx"), required=True)
     parser.add_argument("--cfr-jar", type=Path)
     parser.add_argument("--jadx", type=Path)
+    parser.add_argument("--jadx-jdk-zip", action="store_true",
+                        help="Use the diagnostic Java adapter and JADX's existing JDK ZIP fallback (ZIP64).")
     parser.add_argument("--threads", type=int, default=8)
     parser.add_argument("--heap-mb", type=int, default=2048)
     parser.add_argument("--oom-heap-mb", type=int, default=8192)
@@ -63,6 +66,19 @@ def main():
                     capture_output=True, text=True, check=True).stdout.strip(),
                    "maximum_concurrent_heap_mb": args.jadx_heap_mb,
                    "zip_max_entries": args.zip_max_entries}
+        if args.jadx_jdk_zip:
+            all_jar = args.jadx.resolve().parents[1] / "lib" / ("jadx-" + backend["jadx_version"] + "-all.jar")
+            classes = folder / "adapter"
+            classes.mkdir()
+            subprocess.run(["javac", "-cp", str(all_jar), "-d", str(classes),
+                            str(ROOT / "tests/JadxLargeJar.java")], check=True,
+                           capture_output=True, text=True)
+            command = ["java", f"-Xmx{args.jadx_heap_mb}m", "-cp",
+                       os.pathsep.join((str(classes), str(all_jar))), "JadxLargeJar", "jdk",
+                       str(folder / "loaded-origins.txt"), *command[1:]]
+            backend.update(zip_reader="jdk-fallback-via-api",
+                           adapter_sha256=hashlib.sha256((ROOT / "tests/JadxLargeJar.java").read_bytes()).hexdigest(),
+                           jadx_all_jar_sha256=hashlib.sha256(all_jar.read_bytes()).hexdigest())
     report = {"tool": args.tool, "input": str(args.input.resolve()),
               "input_bytes": args.input.stat().st_size,
               "input_sha256": hashlib.sha256(args.input.read_bytes()).hexdigest(),
@@ -78,6 +94,15 @@ def main():
     (folder / "results.json").write_text(json.dumps(report, indent=2) + "\n")
     report["run"] = measure(command, folder, env, cpus, args.run_timeout)
     report["source_quality"] = directory_quality(folder / "export")
+    if args.tool == "jadx" and args.jadx_jdk_zip and (folder / "loaded-origins.txt").is_file():
+        with zipfile.ZipFile(args.input) as archive:
+            expected = {args.input.name + ":" + n for n in archive.namelist()
+                        if n.endswith(".class") and not n.startswith("META-INF/versions/")}
+        loaded = set((folder / "loaded-origins.txt").read_text().splitlines())
+        report["input_coverage"] = {"expected_base_class_origins": len(expected),
+                                    "loaded_origins": len(loaded), "missing": len(expected - loaded),
+                                    "unexpected": len(loaded - expected),
+                                    "missing_examples": sorted(expected - loaded)[:10]}
     if args.tool == "asc":
         try:
             report["outputs"] = inspect_outputs(folder)
@@ -89,6 +114,7 @@ def main():
     # Preserve the actual backend status; marker diagnostics are reported separately.
     return bool(report["run"]["returncode"] or report["run"]["timed_out"]
                 or report.get("inspection_error")
+                or report.get("input_coverage", {}).get("missing")
                 or report.get("outputs", {}).get("hash_mismatches"))
 
 

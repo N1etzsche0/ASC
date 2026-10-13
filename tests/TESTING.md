@@ -136,7 +136,7 @@ that memory changes preserve completed exports on resume and that real CFR CLI
 summaries report automatic and explicit selections.
 
 `test_jvm_source_quality.py` verifies CFR/JADX failure-marker counting separately
-from CFR control-flow structuring comments. These are source diagnostics, not
+from CFR structuring comments and JADX warning/error comments. These are source diagnostics, not
 compilation or semantic-equivalence checks. A complete source-file inventory can
 still contain failed methods.
 
@@ -168,8 +168,26 @@ python tests/benchmark_jvm_large_compare.py /path/to/large.jar --tool jadx \
 The ASC profile disables enum-switch reconstruction and resource copying.
 JADX uses its default code transformations with `--config none --no-res`.
 Both profiles allow at most 16 GiB of concurrent configured Java heap; RSS also
-includes native/Python/cache memory. The configurable JADX ZIP entry limit
-supports the AWS Bundle's 178,095 entries without disabling ZIP security checks.
+includes native/Python/cache memory. The configurable JADX ZIP entry limit is
+passed through its environment; security checks remain enabled. JADX 1.5.6's
+default parser reads only the first 65,535 entries of the tested ZIP64 AWS
+Bundle, even with this higher limit. Preserve that result as an incomplete-input
+diagnostic. To measure the complete original JAR with the existing JDK fallback:
+
+```sh
+python tests/benchmark_jvm_large_compare.py /path/to/large.jar --tool jadx \
+  --jadx /path/to/jadx/bin/jadx --jadx-jdk-zip --threads 8 --jadx-heap-mb 16384 \
+  --zip-max-entries 200000 --output artifacts/jvm/large-comparison/jadx-jdk
+```
+
+This compiles `tests/JadxLargeJar.java` against the installed distribution's
+`jadx-<version>-all.jar` before timing. The adapter matches the CLI caches, code
+writer, plugin discovery and environment, forces `FALLBACK_AS_DEFAULT`, records
+loaded class origins, and saves sources through JADX's API. The report compares
+loaded origins to all base class entries (suitable for these ordinary,
+non-multi-release JARs). It preserves the original input and upstream binary;
+this API-adapter measurement is labeled separately from the default CLI.
+
 Each tool runs once in a fresh process, without a separate warmup. Reports retain
 commands, backend versions/checksums, input SHA-256, CPU set, wall time, process
 status, source diagnostics and ASC manifest hashes. Compare file counts only as

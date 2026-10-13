@@ -9,6 +9,18 @@ from benchmark_jvm_large import inspect_outputs
 
 
 class SourceQualityTests(unittest.TestCase):
+    def test_jadx_warnings_are_not_counted_as_failed_methods(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "Warnings.java").write_text("/* JADX WARN: restructure */\n/* JADX WARN: types */")
+            (root / "Errors.java").write_text("/* JADX ERROR: exception */\nMethod not decompiled")
+            report = directory_quality(root)
+            self.assertEqual(report["jadx_warning_markers"], 2)
+            self.assertEqual(report["jadx_error_markers"], 1)
+            self.assertEqual(report["files_with_jadx_warnings"], 1)
+            self.assertEqual(report["files_with_jadx_errors"], 1)
+            self.assertEqual(report["failed_method_markers"], 1)
+
     def test_cfr_failed_method_and_structuring_diagnostics_are_separate(self):
         result = source_quality("/* This method has failed to decompile. */\n"
                                 "/* Unable to fully structure code */")
