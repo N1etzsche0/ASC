@@ -1,13 +1,19 @@
-# Droid ASC: On-demand Android and JVM decompilation
+# ASC: Java web application and Android decompilation
 
-This fork extends ASC's Android workflow to large Java web applications. The
-CLI lists classes, searches bytecode references, decompiles selected classes,
-exports source in batches, and reports static JSP, framework and reflection
-evidence. JSON Lines output supports Agents and scripts.
+ASC provides a CLI for inspecting compiled Java applications and Android
+artifacts. This fork adds recursive JAR/WAR discovery, source export and static
+JSP, framework and reflection analysis to the original Android workflow.
+Agents and scripts can query classes and bytecode references before choosing
+which sources to decompile, or export an entire application with a resumable
+manifest.
+
+For JVM inputs, inventory and static analysis use Python without starting Java.
+Source decompilation uses a configured CFR backend. ASC inspects application
+files without launching the application.
 
 | Input | Supported workflow |
 | --- | --- |
-| Android APK / DEX | Class listing, selective decompilation, bytecode references and APK manifest decoding |
+| Android APK / ZIP containing DEX | Class listing, selective decompilation, bytecode references and APK manifest decoding |
 | JVM class / JAR / WAR / EAR / ZIP | Class listing, selective decompilation, bytecode references, bulk export and static analysis |
 | JVM application directory | Recursive discovery of loose classes, multiple archives and source/configuration assets |
 
@@ -16,7 +22,7 @@ Duplicate class definitions retain their full archive origins. ZIPs containing
 DEX/APK entries use the Android backend. The GUI supports Android inputs;
 the JVM workflow uses the CLI.
 
-## Install
+## Install this fork
 
 Install **this checkout** to use the fork's JVM features. The upstream PyPI
 package may have a different feature set. Python 3.11 and 3.12 are the repository's
@@ -47,6 +53,23 @@ You can also pass `--cfr-jar /absolute/path/to/cfr.jar`. ASC does not download a
 backend automatically. It invokes CFR without running the inspected application.
 See [JVM setup and limits](docs/JVM.md#setup) for Java, timeout and dependency
 context options.
+
+## Quick start
+
+Use an archive or a directory containing application classes and dependencies:
+
+```sh
+droidasc listclass /path/to/application --json -o classes.jsonl
+droidasc getclass /path/to/application com.example.Controller -o Controller.java
+droidasc export /path/to/application --threads 2 -o /path/to/export
+droidasc export /path/to/application --threads 2 -o /path/to/export --resume
+droidasc analyze /path/to/application --kind framework --json -o frameworks.jsonl
+```
+
+Use a new export directory outside the application directory. Class inventory
+preserves each definition's archive origin; the export manifest tracks success,
+failure and source hashes. Create parent directories for report files before
+passing `-o`. The commands below describe selection, memory and analysis options.
 
 ## CLI commands
 
@@ -103,7 +126,9 @@ Classes from the same source container share a JVM invocation. Batch size is
 selected automatically from available memory, remaining Linux cgroup limits and
 worker count, choosing 1, 8, 16, 32 or 64. `--batch-size N` overrides this choice
 (1..256); each batch has a 32 MiB selected-input bound. The JSON summary on stderr
-includes the selected size and mode. Shared dependencies are staged once.
+includes the selected size and mode. Shared dependencies are staged once per
+invocation. Each worker reuses up to eight archive handles across batches and
+dependency staging; caches close when export finishes.
 `--batch-size 1` uses individual invocations. Missing batch
 outputs are retried individually; a timed-out batch records failures for resume.
 Batch settings enter the resume fingerprint, so upgrading the strategy, switching
@@ -112,6 +137,18 @@ Memory fluctuations in automatic mode preserve completed, hash-verified outputs.
 `--limit` bounds classes; resources
 are selected separately or disabled with `--no-resources`. Use separate
 destinations for concurrent export runs. See [bulk export](docs/JVM.md#bulk-source-export).
+
+For a large generated-code JAR, select an explicit heap and worker count:
+
+```sh
+droidasc export application.jar --threads 8 --heap-mb 2048 --no-enum-switch \
+  --no-resources -o /path/to/large-export
+```
+
+This profile was measured on the public inputs below. Heap limits apply to each
+worker; `--no-enum-switch` trades reconstructed enum switches for lowered mapping
+expressions. Tune the worker count to the available memory. Use the same options
+when resuming, and use `getclass` to retry an exact class with different settings.
 
 ### Analyze JSP, frameworks and reflection
 
@@ -139,6 +176,14 @@ and `listresources` emit JSON Lines by default. Class records retain origins;
 reference records include caller methods, descriptors and bytecode offsets.
 Export progress goes to stdout and its summary goes to stderr.
 
+```sh
+droidasc export application.jar --no-resources -o /path/to/export \
+  > progress.jsonl 2> export.log
+```
+
+Stdout contains per-entry records. Stderr may include context/backend warnings
+before the final JSON summary; scripts should read the last line for that summary.
+
 Check the process exit status as well as the output. Export and analysis retain
 successful records when individual inputs fail, emit explicit error records and
 return status 1. Create output parent directories before using `-o`.
@@ -164,22 +209,23 @@ current Android CLI expects an APK/ZIP container.
 
 Local validation on 2026-10-13, using Linux, OpenJDK 25.0.4 and CFR 0.152.
 The recorded regression and Android performance gates cover implementation
-commit `5f5ee68`, including heap-setting and source-quality checks.
+commit `ea05ff1`, including export reader reuse, heap-setting and source-quality checks.
 These are local checks, separate from GitHub Actions results.
 
 ### Regression and performance results
 
 | Check | Python 3.11.16 | Python 3.12.14 | Acceptance |
 | --- | ---: | ---: | --- |
-| Strict regression, including real CFR | 135 passed, no skips | 135 passed, no skips | All tests pass |
+| Strict regression, including real CFR | 137 passed, no skips | 137 passed, no skips | All tests pass |
 | Paired Android performance comparison | Passed | Passed | No material regression in 11 gated metrics |
-| Cold-process startup: internal median | 32.41 ms | 33.17 ms | At most 100 ms |
-| Cold-process startup: wall-time median | 63.10 ms | 64.01 ms | At most 250 ms |
-| Supplied DEX decompilation median | 49.00 ms | 48.20 ms | At most 88 ms |
+| Cold-process startup: internal median | 33.08 ms | 32.69 ms | At most 100 ms |
+| Cold-process startup: wall-time median | 64.70 ms | 63.52 ms | At most 250 ms |
+| Supplied DEX decompilation median | 50.40 ms | 48.50 ms | At most 88 ms |
 | Supplied DEX reference counts | All 16 metrics matched | All 16 metrics matched | Exact counts on every sample |
 
 The comparison used upstream development commit `e94ea6f` as the baseline,
-31 alternating process pairs per workload after warmup, and one fixed CPU.
+31 alternating process pairs per workload after warmup, and CPU 23, separate
+from the large-JAR workload's CPU 0..7.
 It records 23 timing metrics and gates 11 aggregate paths. Startup and supplied
 DEX checks each used nine fresh-process samples. These tests measure Android
 behavior; they do not establish JVM export speed.
@@ -209,27 +255,44 @@ JADX comparison and reproduction commands.
 
 ### Large public JAR results
 
-Apache Hive's public `hive-exec:4.0.1` JAR is 79.54 MiB and contains 38,481
-selected class definitions. Tested on Linux with Python 3.14.6, OpenJDK 25.0.4
-and CFR 0.152; export used eight workers, a 2 GiB heap per CFR process,
-`--no-enum-switch`, and automatic batch size 64.
+Two public Maven Central JARs were measured on Linux with Python 3.14.6,
+OpenJDK 25.0.4 and CFR 0.152. Export used eight workers, a 2 GiB heap per CFR
+process, `--no-enum-switch`, `--no-resources`, and automatic batch size 64.
+The Hive export covers `5f5ee68`; the larger AWS export covers `ea05ff1` with
+archive readers shared across batches and dependency staging.
 
-| Operation | Wall time | Sampled process-tree peak RSS | Result |
-| --- | ---: | ---: | --- |
-| Class inventory | 0.598 s | 62.80 MiB | 38,481 definitions, exit 0 |
-| Full export | 601.49 s | 5,872.12 MiB | 38,480 outputs; one heap failure, exit 1 |
-| Resume with the same settings | 106.94 s | 2,645.62 MiB | 38,480 reused; one failed retry, exit 1 |
-| Exact `HiveParser` via `getclass`, 8 GiB heap | 43.41 s | 4,226.04 MiB | Additional source output, exit 0 |
+| Public JAR | Size | Selected class definitions | Inventory wall time | Inventory peak RSS |
+| --- | ---: | ---: | ---: | ---: |
+| Apache Hive `hive-exec:4.0.1` | 79.54 MiB | 38,481 | 0.598 s | 62.80 MiB |
+| AWS `aws-java-sdk-bundle:1.12.780` | 370.54 MiB | 173,906 | 2.659 s | 231.98 MiB |
 
-All 38,480 managed source hashes matched their manifest. The separate single-class
-recovery produced the remaining source; it does not change the full export's
-error status or manifest. Of the batch outputs, 27 files contain 32 CFR failed-method
-comments and 32 failure stubs; 43 files contain 60 structuring warnings. The
-recovered parser adds one structuring warning. Output coverage does not establish
-compilability or semantic equivalence. Each operation was measured once; no
-large-JAR speedup over another tool is claimed. See
-[large-JAR validation](docs/JVM-LARGE-JAR-VALIDATION.md) for the public download,
-checksums, interrupted trials, source-quality limits and reproduction commands.
+| JAR | Operation | Wall time | Sampled process-tree peak RSS | Result |
+| --- | --- | ---: | ---: | --- |
+| Hive | Full export | 601.49 s | 5,872.12 MiB | 38,480 outputs; one heap failure, exit 1 |
+| Hive | Resume | 106.94 s | 2,645.62 MiB | 38,480 reused; one failed retry, exit 1 |
+| AWS Bundle | Full export | 1,217.22 s | 5,212.05 MiB | 173,906 outputs; no class errors, exit 0 |
+| AWS Bundle | Resume | 83.38 s | 1,628.44 MiB | All 173,906 outputs reused, exit 0 |
+
+Both exports passed manifest/output hash checks with zero mismatches. The Hive
+parser that failed at 2 GiB produced a separate source file through exact
+`getclass` selection at 8 GiB in 43.41 s; that recovery leaves the original export
+manifest and exit status intact. All 12,416 common AWS sources from the interrupted
+pre-cache trial matched the new export's source hashes.
+
+Source quality was checked separately from output-file coverage:
+
+| Batch outputs | Files with failure markers | CFR failed-method comments / failure stubs | Files with structuring warnings / warning count |
+| --- | ---: | ---: | ---: |
+| Hive | 27 | 32 / 32 | 43 / 60 |
+| AWS Bundle | 8 | 10 / 10 | 6 / 8 |
+
+The separately recovered Hive parser adds one structuring warning. Comments and
+stubs can refer to the same method; marker totals are not distinct-method counts.
+Compilability and semantic equivalence were not tested. Each operation was
+measured once; these results do not establish a large-JAR speedup over another
+tool. Public downloads, checksums, raw-evidence locations and reproduction commands
+are in the [Hive validation](docs/JVM-LARGE-JAR-VALIDATION.md) and
+[AWS Bundle validation](docs/JVM-AWS-BUNDLE-VALIDATION.md) reports.
 
 Multi-release JAR selection defaults to `--java-release 17`; use the same
 selection when resuming an export. Nested archives require bounded temporary
@@ -257,14 +320,12 @@ those checks. Retain the upstream [Apache-2.0 license](LICENSE) and acknowledgem
 
 ## Upstream Android design
 
-The original Droid ASC presentation, **R8 Compiler Optimization as a DeCompiler Primitive**:
-https://blackhat.com/europe/arsenal/schedule/index.html#droid-asc-r8-compiler-optimization-as-a-decompiler-primitive-54834
-
-When decompiling massive Android APKs, the standard procedure is to wait. We wait for tools to eat gigabytes of RAM, fully inflate the artifacts, and spend tens of minutes building heavy global indexes and cross references... All of this is just to guarantee fast code searches later, but here is the contradiction. A compiled artifact is already highly structured, modern decompilers never utilize this, they waste massive amounts of time and memory reconstructing a bloated database of code relationships over already structured data. This engineering approach defies common sense. When I can directly extract any code relationship from the APK in milliseconds, does this preprocessing still hold any value?
-
-Instead of forcing decompilers into heavy preprocessing, we choose to query the compiled artifact directly as a database. We built a stateless, zero-overhead engine that extracts and searches code on demand in milliseconds. In this briefing, we will explore the underlying engineering required to bypass traditional bottlenecks. We will demonstrate how to abandon full inflate by probing directly within the Deflate bitstream, building dense Huffman lookup tables to extract core metadata without touching irrelevant data blocks. Furthermore, we will explain optimization details of the R8 compiler, especially how deterministic constant relocation and instruction deduplication leave behind highly concentrated physical layouts, we weaponize this compiler behavior to execute lightning-fast cross DEX code searches. To map these raw bytecode offsets back to methods, we engineered an O(1) instruction locating primitive, achieving constant-time method resolution without building heavy mapping tables. Finally, upon hitting a target, Droid ASC extracts only the specific bytecodes and its dependencies, dynamically reconstructing a minimal and self consistent DEX entirely in memory for instant decompilation.
-
-We will demonstrate this architecture live against a 352MB commercial APK. Droid ASC executes global cross reference searches in 1.79 seconds and decompiles target classes in 177 milliseconds using only 141MB of RAM. By treating the artifact as a read only database and operating with zero preprocessing, we return the decompiler to its core essence. It is no longer a bloated indexing tool, but a lightning fast, on demand decompilation engine that fundamentally redefines how we analyze compiled code.
+The original Droid ASC presentation,
+[R8 Compiler Optimization as a DeCompiler Primitive](https://blackhat.com/europe/arsenal/schedule/index.html#droid-asc-r8-compiler-optimization-as-a-decompiler-primitive-54834),
+describes metadata queries without full preprocessing, direct DEX bytecode
+reference search and reconstruction of a minimal DEX for selected decompilation.
+The upstream image and demonstration below describe Android workloads; the JVM
+measurements in this README are separate local tests of this fork.
 
 ### Android benchmark
 ![Benchmark](./docs/benchmark_all_en.png)

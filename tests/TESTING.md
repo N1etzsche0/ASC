@@ -120,6 +120,10 @@ non-multiplying batch timeouts. Real CFR verifies outer/inner exports without
 exporting unselected dependency classes. This integration test is also required
 by `--require-jvm`.
 
+Archive reuse tests also verify that selected roots and dependency staging share
+one reader across batches, concurrent workers use separate handles, and caches
+close after normal completion, batch timeouts or early generator closure.
+
 `test_jvm_memory.py` uses synthetic host/cgroup files to cover availability,
 ancestor usage, v1/v2 limits, private namespaces, unknown-memory fallback and
 worker-dependent batch budgets without requiring a JDK. Batch tests also verify

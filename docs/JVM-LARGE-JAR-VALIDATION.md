@@ -3,6 +3,8 @@
 2026-10-13 对实现提交 `5f5ee68` 进行本地测试。样本是 Maven Central
 公开发布的 [Apache Hive hive-exec 4.0.1](https://repo.maven.apache.org/maven2/org/apache/hive/hive-exec/4.0.1/hive-exec-4.0.1.jar)。
 本文记录实际全量导出、续跑和单类补导，不根据小样本推算全量速度。
+后续更大输入及读取器复用的验证见
+[AWS SDK Bundle 测试](JVM-AWS-BUNDLE-VALIDATION.md)。本页保留原 Hive 测量值。
 
 ## 输入与环境
 

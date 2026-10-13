@@ -47,8 +47,9 @@ context without becoming additional export records.
 2. Select class definitions by prefix and limit. Group consecutive definitions
    from one source container, splitting on the batch cap, duplicate internal names
    or selected-bytecode bound.
-3. Read each group through a worker-local archive cache. Compare managed output
-   hashes and configuration fingerprints before invoking CFR.
+3. Read each group through a worker-local archive cache retained for the export.
+   Share that reader with dependency staging and isolated retries. Compare managed
+   output hashes and configuration fingerprints before invoking CFR.
 4. Stage shared context for pending classes, invoke CFR, and check each expected
    source file. Missing outputs and context failures fall back to individual
    class attempts; a batch timeout records failures without multiplying timeouts.
@@ -56,7 +57,11 @@ context without becoming additional export records.
    a lock. The CLI emits JSON Lines when each scheduled group completes and a
    JSON summary on stderr after export.
 
-The executor has a bounded submission queue. Output paths include a source
+The executor has a bounded submission queue. Each worker keeps at most eight
+archive handles, without sharing a handle with other workers. Reader contexts
+close after the executor finishes, including failure and early generator closure.
+Archive reuse changes scheduling/I/O only, so it does not alter the resume
+configuration fingerprint. Output paths include a source
 container hash, so duplicate definitions retain separate files. Resume preserves
 completed results only after checking the input, backend/configuration and output
 hashes. Changes in available memory under the same automatic policy affect

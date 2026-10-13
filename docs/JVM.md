@@ -184,8 +184,12 @@ classes from one source container and is split further at 32 MiB of selected
 bytecode. Nested libraries and duplicate
 containers remain separate. Only selected classes are passed to CFR; dependency
 classes are shared context, not additional export records. Inner/anonymous class
-definitions retain individual output paths. ZIP directories are reused through
-worker-local caches of at most eight archives, and the dependency closure is
+definitions retain individual output paths. Each worker retains a cache of at
+most eight open ZIP archives throughout one export, sharing it between selected
+class reads, dependency staging and isolated retries. Workers have separate
+handles; all readers close after pending jobs finish, including failure and early
+generator closure. This avoids rereading large ZIP directories for every batch
+but retains their metadata in memory during export. The dependency closure is
 staged once per invocation (512 classes / 128 MiB). `--batch-size 1` uses the
 individual-class path.
 
@@ -245,6 +249,8 @@ See [batch export measurements](JVM-BATCH-PERFORMANCE.md) for paired timings,
 source-hash checks and memory tradeoffs on bounded real JAR inputs.
 See [large public JAR validation](JVM-LARGE-JAR-VALIDATION.md) for a 38,481-class
 full export, resume, heap-failure recovery and source-quality diagnostics.
+The [AWS SDK Bundle validation](JVM-AWS-BUNDLE-VALIDATION.md) uses a larger
+370.54 MiB input with 173,906 selected definitions and measures archive-reader reuse.
 For module responsibilities and contributor guidance, see
 [JVM implementation structure](JVM-ARCHITECTURE.md).
 
