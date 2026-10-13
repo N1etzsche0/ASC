@@ -74,9 +74,11 @@ def rewrite_manifest(path, records):
 
 def export_sources(application, output, cfr_jar=None, java="java", timeout=120,
                    workers=2, prefix=None, resources=True, resume=False, limit=None,
-                   batch_size=None, stats=None, heap_mb=512):
+                   batch_size=None, stats=None, heap_mb=512, decode_enum_switch=True):
     validate_heap_mb(heap_mb)
     backend_options = {"heap_mb": heap_mb} if heap_mb != 512 else {}
+    if not decode_enum_switch:
+        backend_options["decode_enum_switch"] = False
     if limit is not None and limit <= 0:
         raise ValueError("Export limit must be positive")
     selection = select_batch_size(workers, batch_size)
@@ -86,6 +88,7 @@ def export_sources(application, output, cfr_jar=None, java="java", timeout=120,
     if stats is not None:
         stats.update(selection)
         stats["heap_mb"] = heap_mb
+        stats["decode_enum_switch"] = bool(decode_enum_switch)
     if timeout <= 0:
         raise ValueError("Decompiler timeout must be greater than zero")
     root = Path(output).expanduser().resolve()
@@ -118,6 +121,8 @@ def export_sources(application, output, cfr_jar=None, java="java", timeout=120,
               "export_backend": "cfr-batch-v1", "batch_size": batch_config}
     if heap_mb != 512:
         config["heap_mb"] = heap_mb
+    if not decode_enum_switch:
+        config["decode_enum_switch"] = False
     # Dependency changes also invalidate a resumed decompilation result.
     inventory = sorted(str(path) for path in application._seen if path.is_file())
     config["inputs"] = [(path, Path(path).stat().st_size, Path(path).stat().st_mtime_ns)

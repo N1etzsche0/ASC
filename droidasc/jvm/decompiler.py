@@ -35,7 +35,8 @@ def validate_heap_mb(heap_mb):
         raise ValueError("CFR heap must be an integer from 64 to 8192 MiB")
 
 
-def decompile(application, entry, cfr_jar=None, java="java", timeout=120, heap_mb=512):
+def decompile(application, entry, cfr_jar=None, java="java", timeout=120, heap_mb=512,
+              decode_enum_switch=True):
     validate_heap_mb(heap_mb)
     executable, cfr_jar = _backend(cfr_jar, java, timeout)
     with tempfile.TemporaryDirectory(prefix="asc-cfr-") as temp:
@@ -48,6 +49,8 @@ def decompile(application, entry, cfr_jar=None, java="java", timeout=120, heap_m
         command = [executable, f"-Xmx{heap_mb}m", "-jar", str(cfr_jar), str(target),
                    "--extraclasspath", str(context), "--outputpath", str(output),
                    "--outputencoding", "UTF-8", "--silent", "true"]
+        if not decode_enum_switch:
+            command += ["--decodeenumswitch", "false"]
         try:
             result = subprocess.run(command, capture_output=True, text=True,
                                     encoding="utf-8", errors="replace", timeout=timeout)
@@ -65,7 +68,7 @@ class BatchTimeout(ValueError):
 
 
 def decompile_batch(application, entries, cfr_jar=None, java="java", timeout=120,
-                    class_data=None, heap_mb=512):
+                    class_data=None, heap_mb=512, decode_enum_switch=True):
     """Run selected classes in one CFR JVM; yield per-origin source or failure.
 
     Only explicitly selected roots are passed as arguments. Dependency context
@@ -86,6 +89,8 @@ def decompile_batch(application, entries, cfr_jar=None, java="java", timeout=120
                    "--extraclasspath", str(context), "--outputpath", str(output),
                    "--outputencoding", "UTF-8", "--silent", "true",
                    "--skipbatchinnerclasses", "false"]
+        if not decode_enum_switch:
+            command += ["--decodeenumswitch", "false"]
         try:
             result = subprocess.run(command, capture_output=True, text=True,
                                     encoding="utf-8", errors="replace", timeout=timeout)

@@ -219,6 +219,9 @@ class invocations; reduce `--threads` or `--batch-size` when memory is constrain
 classes may require a larger heap, for example `--heap-mb 2048`; budget this per
 worker. The same setting applies to batch invocations and isolated retries.
 Changing the heap limit invalidates managed decompilation results on resume.
+For large generated enum switch tables, `getclass`/`export --no-enum-switch`
+disables CFR's enum-switch reconstruction. The output retains lowered mapping
+expressions; changing this option invalidates managed sources on resume.
 Tasks are submitted through a bounded queue. `--timeout` limits each CFR invocation,
 including a batch or isolated retry. Missing output/context failures are retried
 once per affected class. A batch timeout records errors without starting N new

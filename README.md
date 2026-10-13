@@ -95,6 +95,8 @@ The default is two concurrent CFR processes, each with a 512 MiB Java heap limit
 `getclass` and `export` accept `--heap-mb 64..8192`; large generated classes may
 need `--heap-mb 2048`. Budget the heap per worker; changing it invalidates managed
 results on resume.
+`--no-enum-switch` can reduce analysis cost for large generated enum switch tables
+by retaining lowered mapping expressions; changing it also invalidates resume.
 Classes from the same source container share a JVM invocation. Batch size is
 selected automatically from available memory, remaining Linux cgroup limits and
 worker count, choosing 1, 8, 16, 32 or 64. `--batch-size N` overrides this choice
@@ -167,7 +169,7 @@ These are local checks, separate from GitHub Actions results.
 
 | Check | Python 3.11.16 | Python 3.12.14 | Acceptance |
 | --- | ---: | ---: | --- |
-| Strict regression, including real CFR | 134 passed, no skips | 134 passed, no skips | All tests pass |
+| Strict regression, including real CFR | 135 passed, no skips | 135 passed, no skips | All tests pass |
 | Paired Android performance comparison | Passed | Passed | No material regression in 11 gated metrics |
 | Cold-process startup: internal median | 32.03 ms | 31.51 ms | At most 100 ms |
 | Cold-process startup: wall-time median | 58.75 ms | 59.95 ms | At most 250 ms |

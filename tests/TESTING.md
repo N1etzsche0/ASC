@@ -135,7 +135,7 @@ To measure a complete large public JAR once and then resume the same output:
 
 ```sh
 python tests/benchmark_jvm_large.py /path/to/large.jar \
-  --cfr-jar /path/to/cfr.jar --threads 8 --heap-mb 2048 \
+  --cfr-jar /path/to/cfr.jar --threads 8 --heap-mb 2048 --no-enum-switch \
   --output artifacts/jvm/large-jar
 ```
 
