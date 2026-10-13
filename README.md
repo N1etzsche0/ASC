@@ -45,6 +45,10 @@ runtime or decompiler. JVM `getclass` and class export require Java and a locall
 configured [CFR JAR](https://www.benf.org/other/cfr/). CFR 0.152 is covered by
 integration tests.
 
+Large exports can reuse CFR JVMs when a JDK (`javac`) is available. The default
+`--cfr-mode auto` selects this path for sufficiently large jobs with heap headroom;
+small jobs and JRE-only installations use ordinary batch processes.
+
 ```sh
 export ASC_CFR_JAR=/absolute/path/to/cfr.jar
 ```
@@ -129,7 +133,13 @@ worker count, choosing 1, 8, 16, 32 or 64. `--batch-size N` overrides this choic
 includes the selected size and mode. Shared dependencies are staged once per
 invocation. Each worker reuses up to eight archive handles across batches and
 dependency staging; caches close when export finishes.
-`--batch-size 1` uses individual invocations. Missing batch
+Large exports use `--cfr-mode auto` to reuse one JVM per worker when a compiler
+and heap headroom are available. `--cfr-mode worker` requires a JDK and forces
+reuse; `--cfr-mode process` retains a fresh JVM per batch. Bounded class-byte and
+dependency-metadata caches reduce repeated context preparation. Retained heaps
+can increase RSS, so report memory alongside speed. Execution mode does not
+invalidate matching resume results. See [CFR worker behavior](docs/JVM.md#reuse-cfr-jvms).
+`--batch-size 1` uses individual class requests. Missing batch
 outputs are retried individually; a timed-out batch records failures for resume.
 Batch settings enter the resume fingerprint, so upgrading the strategy, switching
 automatic/manual mode or changing an explicit size regenerates managed results.
@@ -212,20 +222,20 @@ current Android CLI expects an APK/ZIP container.
 ## Validation and scope
 
 Local validation on 2026-10-13, using Linux, OpenJDK 25.0.4 and CFR 0.152.
-The recorded regression and Android performance gates cover implementation
-commit `af31bd7`, including exclusive heap-failure recovery; source-diagnostic
-coverage was extended in `f5274d0`. Both use the Python matrix below.
+The recorded regression and Android performance gates cover persistent CFR
+workers, bounded class/context caches and exclusive heap-failure recovery.
+Source diagnostics separately classify worker stack-comment differences.
 These are local checks, separate from GitHub Actions results.
 
 ### Regression and performance results
 
 | Check | Python 3.11.16 | Python 3.12.14 | Acceptance |
 | --- | ---: | ---: | --- |
-| Strict regression, including real CFR | 142 passed, no skips | 142 passed, no skips | All tests pass |
+| Strict regression, including real CFR | 155 passed, no skips | 155 passed, no skips | All tests pass |
 | Paired Android performance comparison | Passed | Passed | No material regression in 11 gated metrics |
-| Cold-process startup: internal median | 33.56 ms | 33.49 ms | At most 100 ms |
-| Cold-process startup: wall-time median | 65.07 ms | 65.30 ms | At most 250 ms |
-| Supplied DEX decompilation median | 50.80 ms | 49.90 ms | At most 88 ms |
+| Cold-process startup: internal median | 31.58 ms | 32.26 ms | At most 100 ms |
+| Cold-process startup: wall-time median | 59.83 ms | 61.85 ms | At most 250 ms |
+| Supplied DEX decompilation median | 48.30 ms | 47.20 ms | At most 88 ms |
 | Supplied DEX reference counts | All 16 metrics matched | All 16 metrics matched | Exact counts on every sample |
 
 The comparison used upstream development commit `e94ea6f` as the baseline,
@@ -264,10 +274,11 @@ Two original Maven Central JARs were measured on Linux with Python 3.14.6,
 OpenJDK 25.0.4, CFR 0.152 and JADX 1.5.6. Both tools used CPU 0..7, eight
 workers and at most 16 GiB of concurrently configured Java heap. ASC used
 2 GiB per worker, an exclusive 8 GiB heap-failure retry, `--no-enum-switch`,
-`--no-resources`, and automatic batch size 64. JADX used a single 16 GiB JVM,
+`--no-resources`, `--cfr-mode worker`, and automatic batch size 64. JADX used a single 16 GiB JVM,
 `--config none --no-res -j 8` and its default code transformations.
-The repaired Hive ASC export covers `af31bd7`; AWS covers `f5274d0` with the
-same runtime code. Inventory rows retain the earlier measurements linked below.
+ASC timings below cover the current Java host and bounded context caches. JADX
+timings retain the earlier complete-input comparison; inventory rows also retain
+the earlier measurements linked below.
 
 | Public JAR | Size | Selected class definitions | Inventory wall time | Inventory peak RSS |
 | --- | ---: | ---: | ---: | ---: |
@@ -276,19 +287,34 @@ same runtime code. Inventory rows retain the earlier measurements linked below.
 
 | JAR | Tool / operation | Wall time | Sampled process-tree peak RSS | Output / status |
 | --- | --- | ---: | ---: | --- |
-| Hive | ASC full export | 479.52 s | 5,590.67 MiB | 38,481 files; one recovered heap failure; exit 0 |
-| Hive | ASC resume | 18.95 s | 374.00 MiB | All 38,481 reused; no retries; exit 0 |
+| Hive | ASC worker export | 208.90 s | 12,823.01 MiB | 38,481 files; one recovered heap failure; exit 0 |
+| Hive | ASC resume | 18.78 s | 399.48 MiB | All 38,481 reused; no Java; exit 0 |
 | Hive | JADX default CLI | 151.33 s | 16,878.52 MiB | 14,641 files; method errors; exit 3 |
-| AWS Bundle | ASC full export | 1,200.47 s | 5,128.84 MiB | 173,906 files; exit 0 |
-| AWS Bundle | ASC resume | 83.43 s | 1,628.48 MiB | All 173,906 reused; exit 0 |
+| AWS Bundle | ASC worker export | 420.62 s | 7,553.31 MiB | 173,906 files; exit 0 |
+| AWS Bundle | ASC resume | 63.33 s | 1,629.39 MiB | All 173,906 reused; no Java; exit 0 |
 | AWS Bundle | JADX default CLI (partial input) | 44.80 s | 16,675.92 MiB | 58,339 files; exit 0; incomplete input coverage |
 | AWS Bundle | JADX API with JDK ZIP reader (full input) | 301.01 s | 17,824.13 MiB | 154,944 files; exit 0 |
 
-The Hive parser now recovers **inside the managed export** through one larger-heap
+| Input | Before workers/context caches | Current export | Observed speedup | CFR worker starts / requests |
+| --- | ---: | ---: | ---: | ---: |
+| Hive | 479.52 s | 208.90 s | 2.30× | 9 / 666, plus one exclusive larger-heap process |
+| AWS Bundle | 1,200.47 s | 420.62 s | 2.85× | 8 / 2,718 |
+
+Retained JVMs increase memory: Hive rose from 5,590.67 to 12,823.01 MiB and AWS
+from 5,128.84 to 7,553.31 MiB. Select process mode when memory is more constrained.
+On the complete AWS input, JADX remains about 1.40× faster than current ASC,
+with 17.41 GiB versus 7.38 GiB sampled peak RSS. Historical and current large
+exports each have one measured run; these ratios are observed, not statistical claims.
+
+The Hive parser recovers **inside the managed export** through one larger-heap
 retry. All 38,481 manifest/output hashes match, and the next identical resume
-reuses the recovered parser too. The prior 38,480 successful source hashes remain
-unchanged. AWS also reuses all 173,906 files with zero hash mismatches and zero
-retries; all source hashes match the earlier reader-reuse run. Old failed trials are retained in the detailed report as history.
+reuses the recovered parser too. Completed sources from the preceding exporter
+remain eligible for hash-verified resume. AWS also reuses all 173,906 files with zero managed hash mismatches and
+zero retries. Against the prior exporter, 38,454 Hive and 173,898 AWS source
+hashes match exactly; the remaining 27 / 8 files differ only by added worker
+stack frames in existing CFR failure comments. Raw comments and hashes are
+preserved. The recovered Hive parser's source hash is unchanged. See
+[CFR worker measurements](docs/JVM-CFR-WORKER-PERFORMANCE.md) for exact comparisons.
 
 JADX 1.5.6 default ZIP parsing reads only the first 65,535 entries of the AWS
 ZIP64 JAR: 64,307 of 173,906 class origins. Its 44.80 s result is incomplete.

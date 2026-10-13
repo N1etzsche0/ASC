@@ -13,6 +13,8 @@ source stay in ignored artifact directories.
 | `jvm/application.py` | Discover inputs, preserve origins, select multi-release definitions, read classes/resources and stage dependency context |
 | `jvm/classfile.py` | Parse class metadata, constant-pool values, instructions, annotations and bytecode references |
 | `jvm/decompiler.py` | Invoke configured CFR for individual classes or batches; enforce timeout and source-size limits |
+| `jvm/worker.py`, `jvm/CfrWorker.java` | Own export-scoped CFR JVMs, framed requests, bounded diagnostics, compilation fallback and process cleanup |
+| `jvm/context.py` | Cache immutable validated dependency metadata by class name and content hash within bounded memory |
 | `jvm/exporter.py` | Schedule bounded groups, write atomic outputs, maintain the manifest and validate resume candidates |
 | `jvm/memory.py` | Read available host/container memory and choose the default batch size for the worker count |
 | `jvm/analyzer.py` | Stream resource/class analysis records and attach inventoried definition links |
@@ -43,7 +45,7 @@ context without becoming additional export records.
 
 1. Discover inputs and sample memory once. Automatic batch sizing reserves
    headroom and divides the remaining budget by worker count; an explicit size
-   bypasses the memory probe.
+   bypasses batch sizing. Auto CFR worker selection also samples memory when needed.
 2. Select class definitions by prefix and limit. Group consecutive definitions
    from one source container, splitting on the batch cap, duplicate internal names
    or selected-bytecode bound.
@@ -55,7 +57,8 @@ context without becoming additional export records.
    class attempts; a batch timeout records failures without multiplying timeouts.
    With an explicit larger OOM heap, a typed individual Java heap failure gets
    one further attempt. A condition gate drains active CFR jobs and blocks new
-   ones during that attempt, preserving a bounded aggregate heap budget.
+   ones during that attempt, closes idle Java hosts, and preserves a bounded
+   aggregate configured heap budget.
 5. Replace successful outputs atomically and append their manifest records under
    a lock. The CLI emits JSON Lines when each scheduled group completes and a
    JSON summary on stderr after export.
@@ -71,6 +74,23 @@ hashes. Changes in available memory under the same automatic policy affect
 pending scheduling; changing explicit batch settings invalidates managed results.
 Successful records remain available when other entries fail, and the CLI returns
 status 1 for partial failures.
+
+Large exports can reuse a sequential Java host for each worker. The host invokes
+the unmodified CFR `Main` with the same options, preserving its deliberate
+per-root `DCCommonState` and dumper reset. Only JVM/JIT/static runtime metadata
+survive across requests. A binary protocol separates responses from capped
+diagnostics, retaining heap-failure classification even when the diagnostic tail
+is truncated. Timeouts/crashes kill and reap the affected host. Auto selection
+considers task size, available heap headroom and compiler availability; explicit
+process mode retains the original execution path. Compile the source host only
+on the first actual worker request, so matching resumes need no compiler.
+
+Readers keep a bounded class-byte LRU for immutable open archives; loose files
+remain fresh. Context preparation shares only content-addressed validated names
+and sorted dependency tuples. This avoids repeated Python parsing without
+sharing mutable class analysis or changing dependency selection. Cache locks
+protect LRU accounting; parsing happens outside the lock. All caches are scoped
+to one export and do not affect source fingerprints.
 
 ## Analysis lifecycle
 
@@ -100,6 +120,8 @@ and the testing guide in deterministic source ZIPs. Executable tests, fixture
 archives, local backend JARs and exported application source are excluded.
 The extracted-package integration test verifies Android and JVM commands outside
 the checkout. Use a source checkout to run the regression and performance suites.
+Python wheels include `CfrWorker.java` as JVM package data; compiled helpers remain
+temporary artifacts and are not bundled with the CFR backend.
 
 The CI matrix remains Python 3.11/3.12 with existing Android performance gates.
 JVM export benchmarks are separate diagnostics: use identical inputs and explicit

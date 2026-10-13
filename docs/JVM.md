@@ -193,6 +193,46 @@ but retains their metadata in memory during export. The dependency closure is
 staged once per invocation (512 classes / 128 MiB). `--batch-size 1` uses the
 individual-class path.
 
+### Reuse CFR JVMs
+
+`export --cfr-mode auto` (default) uses one sequential Java host per worker when
+there are more than two batches per worker and available memory can cover the
+configured worker heaps after reserving 25% plus 512 MiB. With unknown or
+insufficient memory, small exports, or no working `javac`, it uses batch
+processes. This selection is made once; it is not a live RSS limit.
+
+```sh
+droidasc export application.war -o /path/to/export --cfr-mode worker --threads 4
+droidasc export application.war -o /path/to/export --cfr-mode process --threads 4
+```
+
+`worker` explicitly requires a JDK compiler; `process` works with a JRE.
+ASC ships its Java host as source and compiles it once into an export-scoped
+temporary directory. No backend download or global compiler/cache setup occurs.
+It calls the configured, unmodified CFR entry point using the same arguments as
+process mode. CFR's per-class analysis-state reset is preserved; class definitions
+from separate origins do not share mutable analysis state. A timed-out or failed
+worker is killed and reaped, and a later request starts a new JVM. Batch timeouts
+still do not trigger a series of individual retries. All hosts are closed on
+completion, failure or early generator closure. Before an exclusive larger-heap
+retry, idle hosts are closed as well as active jobs drained.
+
+Context preparation shares a content-hash-keyed metadata LRU across workers
+(4,096 entries and a conservative 16 MiB charge), keeping only validated names
+and sorted dependencies. Each archive reader also caches at most 1,024 class
+bodies / 16 MiB. Open archive inputs must remain unchanged during an export;
+loose class files are read afresh. Cache bounds do not change the 512-class /
+128 MiB staged context limit. Retained JVM heaps can increase peak RSS; select
+`process` or reduce `--threads` / `--heap-mb` to trade throughput for memory.
+
+The JSON summary includes `cfr_mode`, `cfr_worker_policy`, worker/process start
+counts, worker request/fallback counts, and context-cache hit/miss counts.
+Execution mode and caches change scheduling only and do not invalidate matching
+resume fingerprints. CFR failure comments can include extra host/reflection
+stack frames in worker mode; those diagnostic comments are preserved. Matching
+managed results remain reusable across execution modes. A fully matching resume
+starts no CFR JVMs or compiler.
+
 Automatic selection runs once after input discovery, using Linux `MemAvailable`
 (reclaimable-memory estimate on older kernels) or available physical pages where
 supported. It takes the smaller of host availability and remaining cgroup v1/v2

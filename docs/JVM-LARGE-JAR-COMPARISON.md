@@ -1,5 +1,8 @@
 # 大型公开 JAR：ASC / JADX 对比与堆不足恢复
 
+本页保留常驻 worker 改造前的完整测量。当前执行层、上下文缓存、前后提速、
+内存取舍和原始源码哈希差异见 [CFR worker 测试](JVM-CFR-WORKER-PERFORMANCE.md)。
+
 2026-10-13 使用原始 Maven Central JAR，实测完整源码导出和 ASC 续跑。
 ASC 的 Hive 运行对应 `af31bd7`；AWS 运行对应 `f5274d0`，两者 JVM
 运行时代码相同，后者补充 JADX ZIP64 诊断适配器与测试。

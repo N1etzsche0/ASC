@@ -129,6 +129,31 @@ the managed manifest, and check resume fingerprints and current-run counters.
 The concurrency test verifies that larger-heap retries exclude other CFR jobs
 and release the gate when recovery fails. Real CFR CLI tests cover the new option.
 
+`test_jvm_worker.py` covers persistent-worker reuse, bounded diagnostics with
+heap detection before truncation, timeout/crash recovery, compiler fallback,
+automatic task/memory policy, cache bounds and changed content. Real CFR checks
+process/worker source hashes across different definitions in nested JARs,
+inner/anonymous output, resume without starting Java, and generator cleanup.
+The larger-heap test verifies that retained idle JVMs are closed before recovery.
+Strict JVM mode requires these fixtures and integrations without skips.
+
+To compare process and worker execution with identical CFR options and exact
+per-origin output hashes (three alternating pairs after excluded warmup):
+
+```sh
+python tests/benchmark_jvm_worker.py /path/to/sample.jar \
+  --cfr-jar /path/to/cfr.jar --threads 8 --batch-size 64 --heap-mb 2048 \
+  --no-enum-switch --output artifacts/jvm/worker-pairs
+```
+
+Both modes in this runner include the current bounded context caches; it isolates
+JVM reuse rather than comparing against a historical exporter. Retained JVMs
+can increase memory, so report RSS alongside wall time. Use an immutable archive
+and a fresh output directory. The runner retains raw hashes and separately
+classifies differences confined to extra host frames in CFR failure comments;
+other source or origin differences fail validation. The complete large-JAR runner also accepts
+`--cfr-mode worker` / `process` for full export and hash-verified resume.
+
 `test_jvm_memory.py` uses synthetic host/cgroup files to cover availability,
 ancestor usage, v1/v2 limits, private namespaces, unknown-memory fallback and
 worker-dependent batch budgets without requiring a JDK. Batch tests also verify

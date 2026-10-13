@@ -267,25 +267,46 @@ class JvmApplication:
             return _read_class(entry.path, archive, entry.member)
 
     @contextmanager
-    def class_reader(self):
+    def class_reader(self, byte_cache_bytes=0, byte_cache_entries=1024):
         """Reuse a bounded set of ZIP directories within one worker/context."""
         archives = OrderedDict()
+        bodies = OrderedDict()
+        body_bytes = 0
+        archive_serial = 0
 
         def read(entry):
+            nonlocal body_bytes, archive_serial
             if entry.member is None:
+                # Loose files may change while an application object is reused.
                 return _read_class(entry.path)
-            archive = archives.pop(entry.path, None)
-            if archive is None:
+            opened = archives.pop(entry.path, None)
+            if opened is None:
                 if len(archives) >= 8:
-                    archives.popitem(last=False)[1].close()
+                    archives.popitem(last=False)[1][0].close()
                 archive = zipfile.ZipFile(entry.path)
-            archives[entry.path] = archive
-            return _read_class(entry.path, archive, entry.member)
+                archive_serial += 1
+                opened = (archive, archive_serial)
+            archive, serial = opened
+            archives[entry.path] = opened
+            # The serial prevents content from a closed/reopened archive aliasing
+            # an old cache entry. Open archives are immutable export inputs.
+            key = (serial, entry.member)
+            cached = bodies.pop(key, None) if byte_cache_bytes > 0 else None
+            if cached is not None:
+                bodies[key] = cached
+                return cached
+            data = _read_class(entry.path, archive, entry.member)
+            if byte_cache_entries > 0 and len(data) <= byte_cache_bytes:
+                while bodies and (len(bodies) >= byte_cache_entries or body_bytes + len(data) > byte_cache_bytes):
+                    body_bytes -= len(bodies.popitem(last=False)[1])
+                bodies[key] = data
+                body_bytes += len(data)
+            return data
 
         try:
             yield read
         finally:
-            for archive in archives.values():
+            for archive, _serial in archives.values():
                 archive.close()
 
     def resources(self, kinds=None):
@@ -354,16 +375,17 @@ class JvmApplication:
             except ValueError as exc:
                 raise ValueError(f"{entry.origin}: {exc}") from exc
 
-    def stage_context(self, entry, destination, max_classes=512, read_class=None):
+    def stage_context(self, entry, destination, max_classes=512, read_class=None, metadata_cache=None):
         """Stage a bounded dependency closure, favouring the selected class container.
 
         The context lets CFR resolve related classes without expanding every JAR.
         Ambiguous dependencies outside that container are omitted.
         """
-        return self.stage_contexts([entry], destination, max_classes, read_class=read_class)
+        return self.stage_contexts([entry], destination, max_classes, read_class=read_class,
+                                   metadata_cache=metadata_cache)
 
     def stage_contexts(self, entries, destination, max_classes=512, class_data=None,
-                       read_class=None):
+                       read_class=None, metadata_cache=None):
         """Stage selected roots once, then their shared bounded dependencies.
 
         Required roots must fit the context; dependencies may be truncated.
@@ -394,16 +416,22 @@ class JvmApplication:
                     if current.origin in required:
                         raise ValueError("Selected classes exceed the 128 MiB context limit")
                     return True
-                parsed = ClassFile(data)
-                if parsed.name != current.name:
-                    raise ValueError(f"Class entry/name mismatch: {current.origin}")
+                if metadata_cache is None:
+                    parsed = ClassFile(data)
+                    if parsed.name != current.name:
+                        raise ValueError(f"Class entry/name mismatch: {current.origin}")
+                    dependencies = sorted(parsed.dependencies())
+                else:
+                    dependencies = metadata_cache.dependencies(current, data)
                 target = destination / _safe_class_path(current.name)
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(data)
                 staged.add(current.name)
                 staged_bytes += len(data)
                 # InnerClasses entries are part of the constant-pool dependencies.
-                for name in sorted(parsed.dependencies() - queued):
+                for name in dependencies:
+                    if name in queued:
+                        continue
                     candidates = self.by_name.get(name, [])
                     local = [candidate for candidate in candidates
                              if entry_container(candidate) == entry_container(current)]

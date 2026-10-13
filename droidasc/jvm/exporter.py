@@ -9,7 +9,8 @@ from threading import Condition, Lock, local
 
 from .application import _safe_class_path, safe_relative_path, entry_container
 from .decompiler import decompile, decompile_batch, BatchTimeout, HeapFailure, validate_heap_mb
-from .memory import select_batch_size
+from .memory import select_batch_size, available_memory_bytes
+from .worker import CfrWorkerPool
 
 MAX_BATCH_BYTES = 32 * 1024 * 1024
 
@@ -109,7 +110,9 @@ def rewrite_manifest(path, records):
 def export_sources(application, output, cfr_jar=None, java="java", timeout=120,
                    workers=2, prefix=None, resources=True, resume=False, limit=None,
                    batch_size=None, stats=None, heap_mb=512, decode_enum_switch=True,
-                   oom_heap_mb=None):
+                   oom_heap_mb=None, cfr_mode="auto"):
+    if cfr_mode not in {"auto", "worker", "process"}:
+        raise ValueError("CFR mode must be auto, worker or process")
     validate_heap_mb(heap_mb)
     if oom_heap_mb is not None:
         validate_heap_mb(oom_heap_mb)
@@ -128,6 +131,7 @@ def export_sources(application, output, cfr_jar=None, java="java", timeout=120,
         stats.update(selection)
         stats["heap_mb"] = heap_mb
         stats["decode_enum_switch"] = bool(decode_enum_switch)
+        stats["cfr_mode"] = cfr_mode
         if oom_heap_mb is not None:
             stats["oom_heap_mb"] = oom_heap_mb
             stats["oom_retries"] = 0
@@ -181,14 +185,37 @@ def export_sources(application, output, cfr_jar=None, java="java", timeout=120,
     reader_lock = Lock()
     worker_state = local()
     heap_gate = _HeapGate()
+    # The bridge pays off after several batches per worker. Retained idle heaps
+    # also need headroom; explicit worker mode remains available for tuning.
+    selected_count = sum(1 for _ in application.classes(prefix))
+    if limit is not None:
+        selected_count = min(selected_count, limit)
+    small_export = selected_count <= workers * batch_size * 2
+    reason = "explicit"
+    if cfr_mode == "auto":
+        available = selection.get("available_memory_bytes")
+        if available is None:
+            available = available_memory_bytes()
+        low_memory = available is None or max(0, available * 3 // 4 - 512 * 1024 ** 2) < workers * heap_mb * 1024 ** 2
+        reason = "small-export" if small_export else "memory" if low_memory else "reuse"
+        small_export = small_export or low_memory
+    worker_pool = CfrWorkerPool(cfr_mode, small_export=small_export)
+    if stats is not None:
+        stats["cfr_worker_policy"] = reason
 
     def worker_reader():
         if not hasattr(worker_state, "read"):
             # One bounded archive cache per worker, shared by roots and context.
             # ExitStack closes readers only after all executor jobs have stopped.
             with reader_lock:
-                worker_state.read = reader_contexts.enter_context(application.class_reader())
+                worker_state.read = reader_contexts.enter_context(
+                    application.class_reader(byte_cache_bytes=16 * 1024 * 1024))
         return worker_state.read
+
+    def backend_worker():
+        if not hasattr(worker_state, "cfr"):
+            worker_state.cfr = worker_pool.worker()
+        return worker_state.cfr
 
     def commit(record):
         # Persist each completed class before the rest of its group can fail.
@@ -246,7 +273,7 @@ def export_sources(application, output, cfr_jar=None, java="java", timeout=120,
             try:
                 with heap_gate.process():
                     source = decompile(application, item[0], cfr_jar, java, timeout,
-                                       read_class=read, **backend_options)
+                                       read_class=read, worker=backend_worker(), **backend_options)
             except HeapFailure as exc:
                 source = exc
                 if oom_heap_mb is not None:
@@ -255,6 +282,7 @@ def export_sources(application, output, cfr_jar=None, java="java", timeout=120,
                         # One attempt, after all ordinary JVMs have exited. Waiting
                         # retries block new jobs, avoiding starvation and heap sums.
                         with heap_gate.process(exclusive=True):
+                            worker_pool.close_workers()
                             source = decompile(application, item[0], cfr_jar, java, timeout,
                                                read_class=read,
                                                **{**backend_options, "heap_mb": oom_heap_mb})
@@ -275,6 +303,7 @@ def export_sources(application, output, cfr_jar=None, java="java", timeout=120,
                                                    cfr_jar, java, timeout,
                                                    class_data={item[0].origin: item[2] for item in items},
                                                    read_class=read,
+                                                   worker=backend_worker(),
                                                    **backend_options))
             except BatchTimeout as exc:
                 for item in items:
@@ -354,6 +383,13 @@ def export_sources(application, output, cfr_jar=None, java="java", timeout=120,
                 yield [entry], True
 
     with ExitStack() as reader_contexts, manifest.open("a", encoding="utf-8", newline="\n") as log:
+        # Executor is closed first, then all idle JVMs and their compiled bridge.
+        reader_contexts.callback(worker_pool.close)
+        if stats is not None:
+            reader_contexts.callback(lambda: stats.update(worker_pool.counters))
+            reader_contexts.callback(lambda: stats.update(
+                context_cache_hits=worker_pool.context_cache.hits,
+                context_cache_misses=worker_pool.context_cache.misses))
         for error in application.errors:
             commit(error)
             yield error

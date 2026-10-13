@@ -33,6 +33,7 @@ class ReleaseTests(unittest.TestCase):
                 self.assertIn('ASC-v0.1.0-rc.1/LICENSE', names)
                 self.assertIn('ASC-v0.1.0-rc.1/droidasc/jvm/application.py', names)
                 self.assertIn('ASC-v0.1.0-rc.1/droidasc/jvm/memory.py', names)
+                self.assertIn('ASC-v0.1.0-rc.1/droidasc/jvm/CfrWorker.java', names)
                 self.assertIn('ASC-v0.1.0-rc.1/docs/JVM-ARCHITECTURE.md', names)
                 self.assertIn('ASC-v0.1.0-rc.1/tests/TESTING.md', names)
                 self.assertFalse(any(name.endswith(('.dex', '.apk', '/test.py', '/test_findrefs.py'))

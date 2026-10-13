@@ -33,11 +33,11 @@ if __name__ == '__main__':
                                        or test.id().endswith('test_archive_is_reproducible_and_runs_outside_checkout')
                                        or test.id().endswith('test_real_cfr_decompiles_war_class_and_inner_class')
                                        or test.id().endswith('test_real_cfr_bulk_export_and_resume')
-                                       or (test.id().startswith('test_jvm_batch.') and '.test_real_cfr_' in test.id()))
+                                       or (test.id().startswith(('test_jvm_batch.', 'test_jvm_worker.')) and '.test_real_cfr_' in test.id()))
                                    == (args.suite == 'integration'))
     if suite.countTestCases() == 0:
         parser.error('selected suite contains no tests')
     result = unittest.TextTestRunner(verbosity=2).run(suite)
     required_skips = [test for test, _reason in result.skipped
-                      if (args.require_jvm if test.id().startswith(('test_jvm.', 'test_jvm_web.', 'test_jvm_batch.')) else args.require_decompiler)]
+                      if (args.require_jvm if test.id().startswith(('test_jvm.', 'test_jvm_web.', 'test_jvm_batch.', 'test_jvm_worker.')) else args.require_decompiler)]
     sys.exit(0 if result.wasSuccessful() and not required_skips else 1)

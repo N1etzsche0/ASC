@@ -49,6 +49,7 @@ def main():
     parser.add_argument("--threads", type=int, default=8)
     parser.add_argument("--heap-mb", type=int, default=512)
     parser.add_argument("--oom-heap-mb", type=int)
+    parser.add_argument("--cfr-mode", choices=("auto", "worker", "process"), default="auto")
     parser.add_argument("--no-enum-switch", action="store_true")
     parser.add_argument("--run-timeout", type=float, default=1800)
     parser.add_argument("--output", type=Path, required=True)
@@ -66,6 +67,7 @@ def main():
               "cfr_sha256": hashlib.sha256(args.cfr_jar.read_bytes()).hexdigest(),
               "threads": args.threads, "heap_mb": args.heap_mb, "decode_enum_switch": not args.no_enum_switch,
               "oom_heap_mb": args.oom_heap_mb,
+              "cfr_mode": args.cfr_mode,
               "cpus": cpus, "batch_size": "auto", "samples": 1,
               "method": "Full export then resume; one process each, no speedup extrapolation. "
                         "Each CFR JVM uses one active processor and the configured heap. "
@@ -76,6 +78,7 @@ def main():
     command = [sys.executable, str(Path(__file__).resolve().parents[1] / "main.py"), "export",
                str(args.input.resolve()), "--no-resources", "--threads", str(args.threads),
                "--heap-mb", str(args.heap_mb),
+               "--cfr-mode", args.cfr_mode,
                "-o", str(export_folder / "export")]
     if args.no_enum_switch:
         command += ["--no-enum-switch"]
