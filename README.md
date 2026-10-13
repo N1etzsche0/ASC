@@ -155,11 +155,54 @@ current Android CLI expects an APK/ZIP container.
 
 ## Validation and scope
 
-Local validation on 2026-10-13:
+Local validation on 2026-10-13, using Linux, OpenJDK 25.0.4 and CFR 0.152.
+Regression and Android performance results below cover implementation commit
+`79930e4`; they are local checks, separate from GitHub Actions results.
+
+### Regression and performance results
+
+| Check | Python 3.11.16 | Python 3.12.14 | Acceptance |
+| --- | ---: | ---: | --- |
+| Strict regression, including real CFR | 130 passed, no skips | 130 passed, no skips | All tests pass |
+| Paired Android performance comparison | Passed | Passed | No material regression in 11 gated metrics |
+| Cold-process startup: internal median | 32.03 ms | 31.51 ms | At most 100 ms |
+| Cold-process startup: wall-time median | 58.75 ms | 59.95 ms | At most 250 ms |
+| Supplied DEX decompilation median | 48.40 ms | 47.80 ms | At most 88 ms |
+| Supplied DEX reference counts | All 16 metrics matched | All 16 metrics matched | Exact counts on every sample |
+
+The comparison used upstream development commit `e94ea6f` as the baseline,
+31 alternating process pairs per workload after warmup, and one fixed CPU.
+It records 23 timing metrics and gates 11 aggregate paths. Startup and supplied
+DEX checks each used nine fresh-process samples. These tests measure Android
+behavior; they do not establish JVM export speed.
+
+Regression coverage includes nested JAR/WAR/EAR inputs, duplicate origins,
+bytecode queries, real CFR inner/anonymous classes, export/resume, automatic
+memory sizing, JSP/framework/reflection evidence, and Android/JVM commands from
+an extracted source package. See [test commands and gate definitions](tests/TESTING.md).
+
+### JVM batch export results
+
+The following full-JAR measurements use CFR 0.152, `--threads 2` and fixed
+`--batch-size 64`. Each result is the median of three runs after warmup; the
+baseline is the pre-batching exporter on identical inputs.
+
+| Public dependency | Class definitions | Before batching | Batch export | Speedup | Matching source hashes |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `slf4j-api.jar` | 24 | 5.374 s | 0.887 s | 6.06× | 24/24 on all runs |
+| `commons-lang.jar` | 124 | 36.743 s | 4.365 s | 8.42× | 124/124 on all runs |
+
+Median process-tree peak RSS increased from 180.2 to 232.3 MiB for SLF4J and
+from 230.2 to 707.9 MiB for Commons Lang. With batch size 16, Commons Lang took
+8.024 s and 445.4 MiB, with all 124 source hashes still matching. These checks
+confirm output consistency; source quality depends on CFR and dependencies. See
+[batch export measurements](docs/JVM-BATCH-PERFORMANCE.md) for sampling limits,
+JADX comparison and reproduction commands.
+
+### ecology9 compatibility results
 
 | Check | Result |
 | --- | --- |
-| Strict local regression suite, including real CFR | 130 tests passed on each of Python 3.11.16 and 3.12.14 |
 | ecology9 recursive JVM inventory | 331,447 class definitions; no discovery errors |
 | ecology9 JSP/configuration analysis | 97 JSPs and 15 parseable XMLs; six incomplete XML fragments remain explicit errors |
 | ecology9 CFR bulk export and resume | Five small interfaces exported successfully; all five skipped on resume |
@@ -177,11 +220,6 @@ Static analysis does not implement a global call graph, interprocedural data flo
 runtime reflection resolution or JSP execution. Arbitrary obfuscation and every
 compiler/class-file version are not guaranteed. The Android benchmarks below
 do not measure JVM performance.
-
-The bounded CFR batch exporter reduced local full-JAR export times by about
-6–8 times in two dependency-library samples, with increased peak memory. See
-[batch export measurements](docs/JVM-BATCH-PERFORMANCE.md) for matching-source
-checks, memory tradeoffs and reproduction commands.
 
 ## Testing and releases
 
