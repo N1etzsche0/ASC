@@ -23,6 +23,8 @@ package may have a different feature set. Python 3.11 and 3.12 are the repositor
 CI targets.
 
 ```sh
+git clone --branch jvm-web-cli https://github.com/N1etzsche0/ASC.git
+cd ASC
 python -m venv .venv
 . .venv/bin/activate
 python -m pip install -e .
@@ -161,8 +163,8 @@ current Android CLI expects an APK/ZIP container.
 ## Validation and scope
 
 Local validation on 2026-10-13, using Linux, OpenJDK 25.0.4 and CFR 0.152.
-The recorded Android performance gates cover implementation commit `79930e4`;
-the strict suite also includes the new heap-setting and source-quality checks.
+The recorded regression and Android performance gates cover implementation
+commit `5f5ee68`, including heap-setting and source-quality checks.
 These are local checks, separate from GitHub Actions results.
 
 ### Regression and performance results
@@ -171,9 +173,9 @@ These are local checks, separate from GitHub Actions results.
 | --- | ---: | ---: | --- |
 | Strict regression, including real CFR | 135 passed, no skips | 135 passed, no skips | All tests pass |
 | Paired Android performance comparison | Passed | Passed | No material regression in 11 gated metrics |
-| Cold-process startup: internal median | 32.03 ms | 31.51 ms | At most 100 ms |
-| Cold-process startup: wall-time median | 58.75 ms | 59.95 ms | At most 250 ms |
-| Supplied DEX decompilation median | 48.40 ms | 47.80 ms | At most 88 ms |
+| Cold-process startup: internal median | 32.41 ms | 33.17 ms | At most 100 ms |
+| Cold-process startup: wall-time median | 63.10 ms | 64.01 ms | At most 250 ms |
+| Supplied DEX decompilation median | 49.00 ms | 48.20 ms | At most 88 ms |
 | Supplied DEX reference counts | All 16 metrics matched | All 16 metrics matched | Exact counts on every sample |
 
 The comparison used upstream development commit `e94ea6f` as the baseline,
@@ -204,6 +206,30 @@ from 230.2 to 707.9 MiB for Commons Lang. With batch size 16, Commons Lang took
 confirm output consistency; source quality depends on CFR and dependencies. See
 [batch export measurements](docs/JVM-BATCH-PERFORMANCE.md) for sampling limits,
 JADX comparison and reproduction commands.
+
+### Large public JAR results
+
+Apache Hive's public `hive-exec:4.0.1` JAR is 79.54 MiB and contains 38,481
+selected class definitions. Tested on Linux with Python 3.14.6, OpenJDK 25.0.4
+and CFR 0.152; export used eight workers, a 2 GiB heap per CFR process,
+`--no-enum-switch`, and automatic batch size 64.
+
+| Operation | Wall time | Sampled process-tree peak RSS | Result |
+| --- | ---: | ---: | --- |
+| Class inventory | 0.598 s | 62.80 MiB | 38,481 definitions, exit 0 |
+| Full export | 601.49 s | 5,872.12 MiB | 38,480 outputs; one heap failure, exit 1 |
+| Resume with the same settings | 106.94 s | 2,645.62 MiB | 38,480 reused; one failed retry, exit 1 |
+| Exact `HiveParser` via `getclass`, 8 GiB heap | 43.41 s | 4,226.04 MiB | Additional source output, exit 0 |
+
+All 38,480 managed source hashes matched their manifest. The separate single-class
+recovery produced the remaining source; it does not change the full export's
+error status or manifest. Of the batch outputs, 27 files contain 32 CFR failed-method
+comments and 32 failure stubs; 43 files contain 60 structuring warnings. The
+recovered parser adds one structuring warning. Output coverage does not establish
+compilability or semantic equivalence. Each operation was measured once; no
+large-JAR speedup over another tool is claimed. See
+[large-JAR validation](docs/JVM-LARGE-JAR-VALIDATION.md) for the public download,
+checksums, interrupted trials, source-quality limits and reproduction commands.
 
 Multi-release JAR selection defaults to `--java-release 17`; use the same
 selection when resuming an export. Nested archives require bounded temporary

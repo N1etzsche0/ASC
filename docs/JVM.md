@@ -243,6 +243,8 @@ batching is not a guarantee of compilable or semantically equivalent source.
 
 See [batch export measurements](JVM-BATCH-PERFORMANCE.md) for paired timings,
 source-hash checks and memory tradeoffs on bounded real JAR inputs.
+See [large public JAR validation](JVM-LARGE-JAR-VALIDATION.md) for a 38,481-class
+full export, resume, heap-failure recovery and source-quality diagnostics.
 For module responsibilities and contributor guidance, see
 [JVM implementation structure](JVM-ARCHITECTURE.md).
 
