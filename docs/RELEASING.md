@@ -26,10 +26,16 @@ must pass on Python 3.11 and 3.12 before publication. A failed gate publishes
 nothing. Prerelease tags create GitHub prereleases.
 
 PR CI also builds the source package and tests its CLI after extraction outside
-the checkout. Only tracked runtime files, requirements, README and docs enter
-the deterministic ZIP; test DEX/APK fixtures and local scripts are excluded.
+the checkout. Tracked and unignored runtime files, requirements, README and docs enter
+the deterministic ZIP. The testing guide (`tests/TESTING.md`) is also included
+so README and documentation links work after extraction; running its regression
+and performance commands requires a source checkout. Executable tests, DEX/APK
+fixtures and local scripts are excluded.
 
 Local packaging: `python scripts/build_release.py v0.1.0 --output dist`.
+New runtime modules can be included in local previews before they are committed;
+review the archive contents before publishing. JVM usage requires a separately
+configured CFR JAR for `getclass` and class export; see [JVM CLI](JVM.md).
 The workflow creates a draft, uploads the ZIP and SHA256SUMS, then publishes it.
 If upload fails, only a draft remains; rerunning replaces draft assets.
 Published releases are never overwritten automatically.

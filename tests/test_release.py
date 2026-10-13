@@ -1,6 +1,8 @@
 import hashlib
+import json
 from pathlib import Path
 import subprocess
+import struct
 import sys
 import tempfile
 import unittest
@@ -29,8 +31,13 @@ class ReleaseTests(unittest.TestCase):
                 names = package.namelist()
                 self.assertTrue(any(name.endswith('/requirements.txt') for name in names))
                 self.assertIn('ASC-v0.1.0-rc.1/LICENSE', names)
+                self.assertIn('ASC-v0.1.0-rc.1/droidasc/jvm/application.py', names)
+                self.assertIn('ASC-v0.1.0-rc.1/droidasc/jvm/memory.py', names)
+                self.assertIn('ASC-v0.1.0-rc.1/docs/JVM-ARCHITECTURE.md', names)
+                self.assertIn('ASC-v0.1.0-rc.1/tests/TESTING.md', names)
                 self.assertFalse(any(name.endswith(('.dex', '.apk', '/test.py', '/test_findrefs.py'))
-                                     or '/tests/' in name or '/.git/' in name for name in names))
+                                     or ('/tests/' in name and not name.endswith('/tests/TESTING.md'))
+                                     or '/.git/' in name for name in names))
                 package.extractall(root)
             app = root / 'ASC-v0.1.0-rc.1'
             apk = root / 'fixture.apk'
@@ -43,3 +50,16 @@ class ReleaseTests(unittest.TestCase):
                                         cwd=root, capture_output=True, text=True, timeout=30)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn(expected, result.stdout)
+            name = b'example/Test'
+            # Minimal valid class: UTF8 name, Class(name), no members or attributes.
+            data = (b'\xca\xfe\xba\xbe' + struct.pack('>HHH', 0, 52, 3)
+                    + b'\x01' + struct.pack('>H', len(name)) + name + b'\x07\x00\x01'
+                    + struct.pack('>HHHHHHH', 1, 2, 0, 0, 0, 0, 0))
+            jar = root / 'fixture.jar'
+            with zipfile.ZipFile(jar, 'w') as package:
+                package.writestr('example/Test.class', data)
+            result = subprocess.run([sys.executable, '-S', str(app / 'main.py'),
+                                     'listclass', str(jar), '--json'], cwd=root,
+                                    capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout)['class'], 'Lexample/Test;')

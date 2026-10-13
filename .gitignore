@@ -19,6 +19,8 @@ testcase.txt
 artifacts/startup/
 artifacts/reference/
 artifacts/comparison/
+artifacts/jvm/
+artifacts/ecology9/
 .performance-base/
 
 # Editor & OS

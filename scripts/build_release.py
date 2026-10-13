@@ -1,4 +1,4 @@
-"""Build a source distribution from tracked runtime files."""
+"""Build a source distribution from tracked and unignored runtime files."""
 import argparse
 import hashlib
 from pathlib import Path
@@ -13,13 +13,13 @@ def build(version, output):
     if not re.fullmatch(r'v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(?:alpha|beta|rc)\.[1-9]\d*)?', version):
         raise ValueError('expected vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-rc.N (also alpha/beta)')
     paths = subprocess.check_output(
-        ['git', 'ls-files', '-z', '--', 'main.py', 'requirements.txt', 'README.md', 'LICENSE',
-         'droidasc', 'dadguard', 'docs'],
+        ['git', 'ls-files', '--cached', '--others', '--exclude-standard', '-z', '--', 'main.py', 'requirements.txt', 'README.md', 'LICENSE',
+         'droidasc', 'dadguard', 'docs', 'tests/TESTING.md'],
         cwd=ROOT).decode().split('\0')
     output.mkdir(parents=True, exist_ok=True)
     archive = output / f'ASC-{version}-source.zip'
     with zipfile.ZipFile(archive, 'w', compression=zipfile.ZIP_DEFLATED) as package:
-        for path in sorted(filter(None, paths)):
+        for path in sorted(set(filter(None, paths))):
             info = zipfile.ZipInfo(f'ASC-{version}/{path}')
             info.compress_type = zipfile.ZIP_DEFLATED
             info.external_attr = 0o100644 << 16

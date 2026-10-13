@@ -35,10 +35,26 @@ jobs:
       - name: Install legacy baseline dependencies for performance comparison
         run: python -m pip install -r .performance-base/requirements.txt
       - run: python -m pip check
+      - name: Prepare JVM test backend
+        run: |
+          javac -version
+          python - <<'PY'
+          import hashlib
+          import os
+          from pathlib import Path
+          import urllib.request
+          path = Path(os.environ['RUNNER_TEMP']) / 'cfr-0.152.jar'
+          urllib.request.urlretrieve('https://www.benf.org/other/cfr/cfr-0.152.jar', path)
+          expected = 'f686e8f3ded377d7bc87d216a90e9e9512df4156e75b06c655a16648ae8765b2'
+          if hashlib.sha256(path.read_bytes()).hexdigest() != expected:
+              raise SystemExit('CFR checksum mismatch')
+          with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as output:
+              output.write(f'ASC_TEST_CFR_JAR={path}\n')
+          PY
       - name: Unit tests (no skips)
-        run: python tests/run_tests.py --require-decompiler --suite unit
+        run: python tests/run_tests.py --require-decompiler --require-jvm --suite unit
       - name: Integration tests (no skips)
-        run: python tests/run_tests.py --require-decompiler --suite integration
+        run: python tests/run_tests.py --require-decompiler --require-jvm --suite integration
       - name: Reject material performance regressions against the target branch
         run: python tests/benchmark_compare.py --baseline .performance-base --samples 31
       - name: Check cold-process startup with --debug

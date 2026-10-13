@@ -76,3 +76,70 @@ The comparison's unit tests exercise small/large regressions, improvements,
 identical timings, noise, outliers and incomplete/invalid measurements. The
 original absolute startup and 0.0880 s gates remain mandatory. Paired timings,
 base/candidate SHAs, p-values and raw logs are saved in `artifacts/comparison/`.
+
+## JVM regression coverage
+
+```sh
+python -m unittest discover -s tests -p test_jvm.py -v
+ASC_TEST_CFR_JAR=/path/to/cfr.jar python tests/run_tests.py --require-decompiler --require-jvm
+```
+
+The JVM fixtures require JDK 17+ (`javac`) and are generated in temporary
+directories. They cover JAR/WAR/EAR/Boot recursion, multi-JAR duplicates, loose
+class names, Unicode/MUTF-8, multi-release manifests, opcode boundaries,
+switch/wide instructions, lambda method references, bytecode offsets, selective
+dependency staging, JSON Lines, malformed input, and bounded temporary storage.
+Inventory tests verify that JAR class bodies remain unread during listing.
+`ASC_TEST_CFR_JAR` enables real CFR decompilation of a WAR class and its internal
+class; `--require-jvm` makes missing JDK/backend or JVM skips fail the runner.
+Android-only strict mode does not require optional JVM integration prerequisites.
+CI fetches CFR 0.152 with a pinned SHA-256 and runs both backends without skips.
+Release tests verify the JVM package and JSON inventory from an unpacked source
+archive outside the checkout. No application classes are executed by these tests.
+
+The fixtures also verify Java 8 and 11 bytecode. Run a separate synthetic scale
+probe with `python tests/benchmark_jvm.py --output artifacts/jvm/scale.json`.
+Its default corpus contains 200 JARs with 50 classes each (10,000 definitions,
+including duplicate names across archives). It checks complete reference counts
+and reports inventory/scan medians and process RSS; it is not a real-application
+performance guarantee or a comparison against another decompiler.
+
+`test_jvm_web.py` covers JSP imports/actions/EL and Java block ranges, XML namespaces,
+Resin/Jersey fragment recovery, XFire, ignored external DTDs, rejected entities,
+Spring/injection class/method/field annotations, source comments/string exclusions,
+SMAP metadata, ServiceLoader registrations, literal/local reflection tracking and
+conservative branch handling. Bulk export tests cover duplicate paths, resume
+hashes, output edits, failed-job retries, truncated final manifests, unmanaged
+destination protection and symlink rejection. Real CFR bulk export/resume is in
+the integration suite and is required by `--require-jvm`.
+
+`test_jvm_batch.py` covers shared dependency context and ZIP reuse, bounded
+per-container groups, nested duplicate libraries, selected-byte splits, batch
+configuration fingerprints, edited-output resume, missing-source isolation and
+non-multiplying batch timeouts. Real CFR verifies outer/inner exports without
+exporting unselected dependency classes. This integration test is also required
+by `--require-jvm`.
+
+`test_jvm_memory.py` uses synthetic host/cgroup files to cover availability,
+ancestor usage, v1/v2 limits, private namespaces, unknown-memory fallback and
+worker-dependent batch budgets without requiring a JDK. Batch tests also verify
+that memory changes preserve completed exports on resume and that real CFR CLI
+summaries report automatic and explicit selections.
+
+Run a paired full-JAR export diagnostic with a previous ASC checkout (or omit
+`--baseline` to compare current `--batch-size 1`):
+
+```sh
+python tests/benchmark_jvm_export.py /path/to/library.jar \
+  --baseline /path/to/previous-checkout --cfr-jar /path/to/cfr.jar \
+  --jadx /path/to/jadx/bin/jadx --samples 3 --batch-size 64 \
+  --output artifacts/jvm/export-comparison
+```
+
+The output directory must be empty. One warmup is excluded and fresh processes
+run in alternating order on a fixed CPU set where supported. The runner checks
+ASC class-origin sets and records source-hash matches, commands, logs, wall-time
+medians and sampled process-tree RSS (when optional `psutil` is installed).
+JADX may merge inner classes into outer source files, so its source-file count
+can differ from ASC's per-definition export. The diagnostic is not a CI gate or
+proof of semantic equivalence/statistical significance.
