@@ -194,7 +194,7 @@ def export_sources(application, output, cfr_jar=None, java="java", timeout=120,
     reason = "explicit"
     if cfr_mode == "auto":
         available = selection.get("available_memory_bytes")
-        if available is None:
+        if "available_memory_bytes" not in selection:
             available = available_memory_bytes()
         low_memory = available is None or max(0, available * 3 // 4 - 512 * 1024 ** 2) < workers * heap_mb * 1024 ** 2
         reason = "small-export" if small_export else "memory" if low_memory else "reuse"

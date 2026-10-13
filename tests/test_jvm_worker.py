@@ -131,6 +131,7 @@ public class Main {{
             return "class cached {}"
 
         for memory, batch, expected in ((8 * 1024 ** 3, 64, "small-export"),
+                                        (None, 1, "memory"),
                                         (512 * 1024 ** 2, 1, "memory"),
                                         (8 * 1024 ** 3, 1, "reuse")):
             with self.subTest(expected=expected), tempfile.TemporaryDirectory() as temp, \
@@ -142,6 +143,16 @@ public class Main {{
                 list(export_sources(app, Path(temp) / "out", workers=1, resources=False,
                                     batch_size=batch, stats=stats))
                 self.assertEqual(stats["cfr_worker_policy"], expected)
+        # Unknown automatic batch memory is a sampled result, not a reason to
+        # resample through another path and make an inconsistent worker choice.
+        with tempfile.TemporaryDirectory() as temp, JvmApplication(self.jars[0]) as app, \
+                patch("droidasc.jvm.memory.available_memory_bytes", return_value=None), \
+                patch("droidasc.jvm.exporter.available_memory_bytes", side_effect=AssertionError("must not resample")), \
+                patch("droidasc.jvm.exporter.decompile_batch", side_effect=lambda a, es, *args, **kw: ((e, "class cached {}") for e in es)):
+            stats = {}
+            records = list(export_sources(app, Path(temp) / "out", workers=1, resources=False, stats=stats))
+            self.assertTrue(all(r["status"] == "ok" for r in records))
+            self.assertIsNone(stats["available_memory_bytes"])
 
     def test_small_auto_and_process_mode_do_not_compile_bridge(self):
         for mode, small in (("auto", True), ("process", False)):
