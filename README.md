@@ -92,6 +92,9 @@ and analyzed; export does not copy them by default.
 output paths and status. `--resume` skips matching outputs, regenerates changed
 managed outputs and retries failed jobs. Unmanaged files are not overwritten.
 The default is two concurrent CFR processes, each with a 512 MiB Java heap limit.
+`getclass` and `export` accept `--heap-mb 64..8192`; large generated classes may
+need `--heap-mb 2048`. Budget the heap per worker; changing it invalidates managed
+results on resume.
 Classes from the same source container share a JVM invocation. Batch size is
 selected automatically from available memory, remaining Linux cgroup limits and
 worker count, choosing 1, 8, 16, 32 or 64. `--batch-size N` overrides this choice
@@ -156,14 +159,15 @@ current Android CLI expects an APK/ZIP container.
 ## Validation and scope
 
 Local validation on 2026-10-13, using Linux, OpenJDK 25.0.4 and CFR 0.152.
-Regression and Android performance results below cover implementation commit
-`79930e4`; they are local checks, separate from GitHub Actions results.
+The recorded Android performance gates cover implementation commit `79930e4`;
+the strict suite also includes the new heap-setting and source-quality checks.
+These are local checks, separate from GitHub Actions results.
 
 ### Regression and performance results
 
 | Check | Python 3.11.16 | Python 3.12.14 | Acceptance |
 | --- | ---: | ---: | --- |
-| Strict regression, including real CFR | 130 passed, no skips | 130 passed, no skips | All tests pass |
+| Strict regression, including real CFR | 134 passed, no skips | 134 passed, no skips | All tests pass |
 | Paired Android performance comparison | Passed | Passed | No material regression in 11 gated metrics |
 | Cold-process startup: internal median | 32.03 ms | 31.51 ms | At most 100 ms |
 | Cold-process startup: wall-time median | 58.75 ms | 59.95 ms | At most 250 ms |
@@ -198,19 +202,6 @@ from 230.2 to 707.9 MiB for Commons Lang. With batch size 16, Commons Lang took
 confirm output consistency; source quality depends on CFR and dependencies. See
 [batch export measurements](docs/JVM-BATCH-PERFORMANCE.md) for sampling limits,
 JADX comparison and reproduction commands.
-
-### ecology9 compatibility results
-
-| Check | Result |
-| --- | --- |
-| ecology9 recursive JVM inventory | 331,447 class definitions; no discovery errors |
-| ecology9 JSP/configuration analysis | 97 JSPs and 15 parseable XMLs; six incomplete XML fragments remain explicit errors |
-| ecology9 CFR bulk export and resume | Five small interfaces exported successfully; all five skipped on resume |
-
-The ecology9 run did not decompile all 331,447 definitions. See
-[compatibility validation](docs/ECOLOGY9-VALIDATION.md) for corpus details,
-reproduction commands and coverage gaps. Validation artifacts and exported
-application source remain outside the submitted files.
 
 Multi-release JAR selection defaults to `--java-release 17`; use the same
 selection when resuming an export. Nested archives require bounded temporary

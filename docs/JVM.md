@@ -212,9 +212,13 @@ records also retain the selected size for their run. Stdout remains per-entry
 JSON Lines. Sampling does not monitor subsequent memory pressure or enforce an
 RSS limit; complex classes can use more memory than the scheduling estimate.
 
-Each CFR process may use up to a 512 MiB Java heap, plus native JVM and Python
+Each CFR process defaults to a 512 MiB Java heap, plus native JVM and Python
 inventory/input memory. Batch caches can increase peak RSS compared with isolated
 class invocations; reduce `--threads` or `--batch-size` when memory is constrained.
+`getclass` and `export` accept `--heap-mb` (64..8192, default 512). Large generated
+classes may require a larger heap, for example `--heap-mb 2048`; budget this per
+worker. The same setting applies to batch invocations and isolated retries.
+Changing the heap limit invalidates managed decompilation results on resume.
 Tasks are submitted through a bounded queue. `--timeout` limits each CFR invocation,
 including a batch or isolated retry. Missing output/context failures are retried
 once per affected class. A batch timeout records errors without starting N new
@@ -301,9 +305,6 @@ Analysis emits JSON Lines by default (`--json` is accepted for consistency).
 `--prefix`, `--resource-prefix`, `--limit`, and `--sources-only` bound the scope.
 Output files use `-o`; errors are retained in the stream and result in exit status
 1. Create the output parent directory before using `-o`.
-
-See [ecology9 compatibility validation](ECOLOGY9-VALIDATION.md) for actual input
-formats, bounded validation commands, coverage results and known source gaps.
 
 Format references: [JVMS class-file format](https://docs.oracle.com/javase/specs/jvms/se25/html/jvms-4.html),
 [JVMS instructions](https://docs.oracle.com/javase/specs/jvms/se25/html/jvms-6.html),

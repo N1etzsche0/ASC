@@ -16,11 +16,7 @@ build/
 # Test & benchmarking
 testcase.txt
 .pytest_cache/
-artifacts/startup/
-artifacts/reference/
-artifacts/comparison/
-artifacts/jvm/
-artifacts/ecology9/
+artifacts/
 .performance-base/
 
 # Editor & OS

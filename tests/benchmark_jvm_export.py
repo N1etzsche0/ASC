@@ -10,6 +10,7 @@ import statistics
 import subprocess
 import sys
 import time
+from jvm_source_quality import source_quality
 
 try:
     import psutil
@@ -59,15 +60,17 @@ def measure(command, folder, env, cpus, timeout):
 def outputs(folder, tool):
     source = folder / "export"
     files = sorted(source.rglob("*.java"))
-    markers = ("Method not decompiled", "Could not decompile", "Decompilation failed")
     failures = 0
+    structuring = 0
     for path in files:
         body = path.read_text(encoding="utf-8", errors="replace")
-        failures += sum(body.count(marker) for marker in markers)
+        quality = source_quality(body)
+        failures += quality["failed_method_markers"]
+        structuring += quality["structuring_markers"]
     records = []
     if tool != "jadx":
         records = [json.loads(line) for line in (source / "manifest.jsonl").read_text().splitlines()]
-    return {"java_files": len(files), "failure_markers": failures,
+    return {"java_files": len(files), "failure_markers": failures, "structuring_markers": structuring,
             "manifest_errors": sum(record.get("status") != "ok" for record in records),
             "class_hashes": {record["origin"]: record.get("output_sha256")
                              for record in records if "class" in record}}

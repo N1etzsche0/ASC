@@ -30,7 +30,13 @@ def _source(path):
     return path.read_text(encoding="utf-8")
 
 
-def decompile(application, entry, cfr_jar=None, java="java", timeout=120):
+def validate_heap_mb(heap_mb):
+    if not isinstance(heap_mb, int) or not 64 <= heap_mb <= 8192:
+        raise ValueError("CFR heap must be an integer from 64 to 8192 MiB")
+
+
+def decompile(application, entry, cfr_jar=None, java="java", timeout=120, heap_mb=512):
+    validate_heap_mb(heap_mb)
     executable, cfr_jar = _backend(cfr_jar, java, timeout)
     with tempfile.TemporaryDirectory(prefix="asc-cfr-") as temp:
         context = Path(temp) / "classes"
@@ -39,7 +45,7 @@ def decompile(application, entry, cfr_jar=None, java="java", timeout=120):
         if truncated:
             warnings.warn("Decompiler context reached 512 classes or 128 MiB; some types may be unresolved", RuntimeWarning)
         target = context / _safe_class_path(entry.name)
-        command = [executable, "-Xmx512m", "-jar", str(cfr_jar), str(target),
+        command = [executable, f"-Xmx{heap_mb}m", "-jar", str(cfr_jar), str(target),
                    "--extraclasspath", str(context), "--outputpath", str(output),
                    "--outputencoding", "UTF-8", "--silent", "true"]
         try:
@@ -59,12 +65,13 @@ class BatchTimeout(ValueError):
 
 
 def decompile_batch(application, entries, cfr_jar=None, java="java", timeout=120,
-                    class_data=None):
+                    class_data=None, heap_mb=512):
     """Run selected classes in one CFR JVM; yield per-origin source or failure.
 
     Only explicitly selected roots are passed as arguments. Dependency context
     is shared within the group, not emitted as additional export records.
     """
+    validate_heap_mb(heap_mb)
     entries = list(entries)
     if not entries:
         return
@@ -74,7 +81,7 @@ def decompile_batch(application, entries, cfr_jar=None, java="java", timeout=120
         output = Path(temp) / "source"
         if application.stage_contexts(entries, context, class_data=class_data):
             warnings.warn("Decompiler context reached 512 classes or 128 MiB; some types may be unresolved", RuntimeWarning)
-        command = [executable, "-Xmx512m", "-jar", str(cfr_jar),
+        command = [executable, f"-Xmx{heap_mb}m", "-jar", str(cfr_jar),
                    *[str(context / _safe_class_path(entry.name)) for entry in entries],
                    "--extraclasspath", str(context), "--outputpath", str(output),
                    "--outputencoding", "UTF-8", "--silent", "true",

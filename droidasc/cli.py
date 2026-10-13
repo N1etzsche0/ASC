@@ -80,7 +80,7 @@ def _handle_jvm(args):
             from droidasc.jvm.decompiler import decompile
 
             entry = application.select(args.dalvik_class, args.origin)
-            source = decompile(application, entry, args.cfr_jar, args.java, args.timeout)
+            source = decompile(application, entry, args.cfr_jar, args.java, args.timeout, heap_mb=args.heap_mb)
             text = (json.dumps({**entry.record(), "source": source}, ensure_ascii=True)
                     if args.json else source)
             if args.output:
@@ -142,7 +142,7 @@ def _handle_application(args):
             from droidasc.jvm.exporter import export_sources
             records = export_sources(application, args.output, args.cfr_jar, args.java, args.timeout,
                                      args.threads, args.prefix, not args.no_resources, args.resume, args.limit,
-                                     batch_size=args.batch_size, stats=export_stats)
+                                     batch_size=args.batch_size, stats=export_stats, heap_mb=args.heap_mb)
             out = sys.stdout
             output_fp = None
         elif args.command == "analyze":
@@ -406,6 +406,8 @@ def _build_main_parser():
     getclass_parser.add_argument("--origin", help="JVM: exact origin from listclass --origins; resolves duplicate classes.")
     getclass_parser.add_argument("--cfr-jar", help="JVM: path to CFR JAR (or set ASC_CFR_JAR).")
     getclass_parser.add_argument("--java", default="java", help="JVM: Java executable (default: java).")
+    getclass_parser.add_argument("--heap-mb", type=int, default=512,
+                                help="JVM: CFR heap per process, 64..8192 MiB (default: 512).")
     getclass_parser.add_argument("--timeout", type=float, default=120, help="JVM: decompiler timeout in seconds.")
 
     listclass_parser = subparsers.add_parser(
@@ -525,6 +527,8 @@ def _build_main_parser():
                                help="Classes per source-container batch, 1..256 (default: auto from available memory/threads, max 64; 1 disables batching).")
     export_parser.add_argument("--cfr-jar", help="Path to CFR JAR (or ASC_CFR_JAR).")
     export_parser.add_argument("--java", default="java", help="Java executable.")
+    export_parser.add_argument("--heap-mb", type=int, default=512,
+                               help="CFR heap per process, 64..8192 MiB (default: 512).")
     export_parser.add_argument("--timeout", type=float, default=120, help="CFR timeout per batch or isolated retry in seconds.")
     export_parser.add_argument("--prefix", help="Filter class names by prefix.")
     export_parser.add_argument("--limit", type=int, help="Export at most this many class definitions.")

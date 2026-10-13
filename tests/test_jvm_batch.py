@@ -236,6 +236,25 @@ class JvmBatchTests(unittest.TestCase):
                     list(export_sources(app, Path(temp) / "out", batch_size=size))
             with self.assertRaisesRegex(ValueError, "timeout"):
                 list(export_sources(app, Path(temp) / "out", timeout=0))
+            for heap in (0, 32, 8193, 128.5):
+                with self.assertRaisesRegex(ValueError, "heap"):
+                    list(export_sources(app, Path(temp) / "out", heap_mb=heap))
+
+    def test_custom_heap_reaches_batch_and_retry_and_invalidates_resume(self):
+        with tempfile.TemporaryDirectory() as temp, JvmApplication(self.jar) as app:
+            output = Path(temp) / "out"
+            stats = {}
+            with patch("droidasc.jvm.exporter.decompile_batch", side_effect=self.fake_batch) as batch:
+                first = list(export_sources(app, output, resources=False))
+                second = list(export_sources(app, output, resources=False, resume=True, heap_mb=2048, stats=stats))
+                self.assertEqual(batch.call_count, 2)
+                self.assertEqual(batch.call_args.kwargs["heap_mb"], 2048)
+                self.assertEqual(stats["heap_mb"], 2048)
+                self.assertTrue(all(not record["resumed"] for record in second))
+                self.assertNotEqual(first[0]["config_hash"], second[0]["config_hash"])
+            with patch("droidasc.jvm.exporter.decompile", return_value="class chosen {}") as single:
+                list(export_sources(app, Path(temp) / "single", resources=False, limit=1, heap_mb=2048))
+                self.assertEqual(single.call_args.kwargs["heap_mb"], 2048)
 
     @unittest.skipUnless(os.environ.get("ASC_TEST_CFR_JAR"), "Set ASC_TEST_CFR_JAR for real CFR batch integration")
     def test_real_cfr_batch_preserves_inner_classes_and_selection(self):
@@ -244,12 +263,13 @@ class JvmBatchTests(unittest.TestCase):
             output = temp / "out"
             command = [sys.executable, str(ROOT / "main.py"), "export", str(self.jar),
                        "-o", str(output), "--no-resources", "--prefix", "batch.One",
-                       "--cfr-jar", os.environ["ASC_TEST_CFR_JAR"], "--batch-size", "64"]
+                       "--cfr-jar", os.environ["ASC_TEST_CFR_JAR"], "--batch-size", "64", "--heap-mb", "1024"]
             first = subprocess.run(command, capture_output=True, text=True, timeout=60)
             self.assertEqual(first.returncode, 0, first.stderr)
             summary = json.loads(first.stderr.splitlines()[-1])
             self.assertEqual(summary["batch_size"], 64)
             self.assertEqual(summary["batch_size_mode"], "explicit")
+            self.assertEqual(summary["heap_mb"], 1024)
             records = [json.loads(line) for line in first.stdout.splitlines()]
             self.assertEqual({record["class"] for record in records}, {"Lbatch/One;", "Lbatch/One$Inner;"})
             self.assertTrue(all(record["status"] == "ok" for record in records))

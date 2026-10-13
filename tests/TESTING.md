@@ -126,6 +126,23 @@ worker-dependent batch budgets without requiring a JDK. Batch tests also verify
 that memory changes preserve completed exports on resume and that real CFR CLI
 summaries report automatic and explicit selections.
 
+`test_jvm_source_quality.py` verifies CFR/JADX failure-marker counting separately
+from CFR control-flow structuring comments. These are source diagnostics, not
+compilation or semantic-equivalence checks. A complete source-file inventory can
+still contain failed methods.
+
+To measure a complete large public JAR once and then resume the same output:
+
+```sh
+python tests/benchmark_jvm_large.py /path/to/large.jar \
+  --cfr-jar /path/to/cfr.jar --threads 8 --heap-mb 2048 \
+  --output artifacts/jvm/large-jar
+```
+
+This diagnostic retains logs, manifest/output hashes, process-tree RSS and
+per-stage status counts. It does not run the inspected application and reports
+partial failures without estimating an unmeasured full-run speedup.
+
 Run a paired full-JAR export diagnostic with a previous ASC checkout (or omit
 `--baseline` to compare current `--batch-size 1`):
 

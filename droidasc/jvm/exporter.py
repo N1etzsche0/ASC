@@ -7,7 +7,7 @@ import tempfile
 from threading import Lock
 
 from .application import _safe_class_path, safe_relative_path, entry_container
-from .decompiler import decompile, decompile_batch, BatchTimeout
+from .decompiler import decompile, decompile_batch, BatchTimeout, validate_heap_mb
 from .memory import select_batch_size
 
 MAX_BATCH_BYTES = 32 * 1024 * 1024
@@ -74,7 +74,9 @@ def rewrite_manifest(path, records):
 
 def export_sources(application, output, cfr_jar=None, java="java", timeout=120,
                    workers=2, prefix=None, resources=True, resume=False, limit=None,
-                   batch_size=None, stats=None):
+                   batch_size=None, stats=None, heap_mb=512):
+    validate_heap_mb(heap_mb)
+    backend_options = {"heap_mb": heap_mb} if heap_mb != 512 else {}
     if limit is not None and limit <= 0:
         raise ValueError("Export limit must be positive")
     selection = select_batch_size(workers, batch_size)
@@ -83,6 +85,7 @@ def export_sources(application, output, cfr_jar=None, java="java", timeout=120,
     batch_size = selection["batch_size"]
     if stats is not None:
         stats.update(selection)
+        stats["heap_mb"] = heap_mb
     if timeout <= 0:
         raise ValueError("Decompiler timeout must be greater than zero")
     root = Path(output).expanduser().resolve()
@@ -113,6 +116,8 @@ def export_sources(application, output, cfr_jar=None, java="java", timeout=120,
     root.mkdir(parents=True, exist_ok=True)
     config = {"java_release": application.java_release, "java": java, "timeout": timeout,
               "export_backend": "cfr-batch-v1", "batch_size": batch_config}
+    if heap_mb != 512:
+        config["heap_mb"] = heap_mb
     # Dependency changes also invalidate a resumed decompilation result.
     inventory = sorted(str(path) for path in application._seen if path.is_file())
     config["inputs"] = [(path, Path(path).stat().st_size, Path(path).stat().st_mtime_ns)
@@ -176,7 +181,7 @@ def export_sources(application, output, cfr_jar=None, java="java", timeout=120,
 
         def individual(item):
             try:
-                source = decompile(application, item[0], cfr_jar, java, timeout)
+                source = decompile(application, item[0], cfr_jar, java, timeout, **backend_options)
             except Exception as exc:
                 source = exc
             finish(item, source)
@@ -189,7 +194,8 @@ def export_sources(application, output, cfr_jar=None, java="java", timeout=120,
             try:
                 iterator = iter(decompile_batch(application, [item[0] for item in items],
                                                cfr_jar, java, timeout,
-                                               class_data={item[0].origin: item[2] for item in items}))
+                                               class_data={item[0].origin: item[2] for item in items},
+                                               **backend_options))
             except BatchTimeout as exc:
                 for item in items:
                     finish(item, exc)
