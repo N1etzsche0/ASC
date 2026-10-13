@@ -123,6 +123,11 @@ by `--require-jvm`.
 Archive reuse tests also verify that selected roots and dependency staging share
 one reader across batches, concurrent workers use separate handles, and caches
 close after normal completion, batch timeouts or early generator closure.
+Heap recovery tests distinguish Java heap exhaustion from other OOM errors,
+verify exactly one optional larger-heap retry, persist successful recovery into
+the managed manifest, and check resume fingerprints and current-run counters.
+The concurrency test verifies that larger-heap retries exclude other CFR jobs
+and release the gate when recovery fails. Real CFR CLI tests cover the new option.
 
 `test_jvm_memory.py` uses synthetic host/cgroup files to cover availability,
 ancestor usage, v1/v2 limits, private namespaces, unknown-memory fallback and
@@ -140,12 +145,37 @@ To measure a complete large public JAR once and then resume the same output:
 ```sh
 python tests/benchmark_jvm_large.py /path/to/large.jar \
   --cfr-jar /path/to/cfr.jar --threads 8 --heap-mb 2048 --no-enum-switch \
+  --oom-heap-mb 8192 \
   --output artifacts/jvm/large-jar
 ```
 
 This diagnostic retains logs, manifest/output hashes, process-tree RSS and
 per-stage status counts. It does not run the inspected application and reports
 partial failures without estimating an unmeasured full-run speedup.
+
+For a large-JAR ASC/JADX comparison, run both commands **sequentially** with the
+same input, CPU availability and thread count, using empty output directories:
+
+```sh
+python tests/benchmark_jvm_large_compare.py /path/to/large.jar --tool asc \
+  --cfr-jar /path/to/cfr.jar --threads 8 --heap-mb 2048 --oom-heap-mb 8192 \
+  --output artifacts/jvm/large-comparison/asc
+python tests/benchmark_jvm_large_compare.py /path/to/large.jar --tool jadx \
+  --jadx /path/to/jadx/bin/jadx --threads 8 --jadx-heap-mb 16384 \
+  --zip-max-entries 200000 --output artifacts/jvm/large-comparison/jadx
+```
+
+The ASC profile disables enum-switch reconstruction and resource copying.
+JADX uses its default code transformations with `--config none --no-res`.
+Both profiles allow at most 16 GiB of concurrent configured Java heap; RSS also
+includes native/Python/cache memory. The configurable JADX ZIP entry limit
+supports the AWS Bundle's 178,095 entries without disabling ZIP security checks.
+Each tool runs once in a fresh process, without a separate warmup. Reports retain
+commands, backend versions/checksums, input SHA-256, CPU set, wall time, process
+status, source diagnostics and ASC manifest hashes. Compare file counts only as
+output layouts: JADX merges/inlines classes while ASC exports each definition.
+These diagnostics do not prove equal class coverage, compilability, semantics or
+statistical significance. Backend failures remain nonzero exit statuses.
 
 Run a paired full-JAR export diagnostic with a previous ASC checkout (or omit
 `--baseline` to compare current `--batch-size 1`):

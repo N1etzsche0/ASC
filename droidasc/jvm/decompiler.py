@@ -35,6 +35,21 @@ def validate_heap_mb(heap_mb):
         raise ValueError("CFR heap must be an integer from 64 to 8192 MiB")
 
 
+class HeapFailure(ValueError):
+    """A JVM heap exhaustion can be retried with an explicitly larger heap."""
+
+
+def _failure(result, message):
+    diagnostics = (result.stderr or "") + "\n" + (result.stdout or "")
+    heap_failure = any(marker in diagnostics for marker in (
+        "java.lang.OutOfMemoryError: Java heap space",
+        "java.lang.OutOfMemoryError: GC overhead limit exceeded",
+    ))
+    details = (result.stderr or result.stdout or "").strip()[-4000:]
+    kind = HeapFailure if heap_failure else ValueError
+    return kind(f"{message}: {details or 'no source produced'}")
+
+
 def decompile(application, entry, cfr_jar=None, java="java", timeout=120, heap_mb=512,
               decode_enum_switch=True, read_class=None):
     validate_heap_mb(heap_mb)
@@ -58,8 +73,7 @@ def decompile(application, entry, cfr_jar=None, java="java", timeout=120, heap_m
             raise ValueError(f"CFR decompilation exceeded {timeout} seconds") from exc
         source = output / _safe_class_path(entry.name).with_suffix(".java")
         if result.returncode != 0 or not source.is_file():
-            details = (result.stderr or result.stdout).strip()[-4000:]
-            raise ValueError(f"CFR failed to decompile {entry.origin}: {details or 'no source produced'}")
+            raise _failure(result, f"CFR failed to decompile {entry.origin}")
         return _source(source)
 
 
@@ -98,11 +112,10 @@ def decompile_batch(application, entries, cfr_jar=None, java="java", timeout=120
         except subprocess.TimeoutExpired as exc:
             raise BatchTimeout(f"CFR batch of {len(entries)} classes exceeded {timeout} seconds; "
                                "retry with a smaller --batch-size or larger --timeout") from exc
-        details = (result.stderr or result.stdout).strip()[-4000:]
         for entry in entries:
             source = output / _safe_class_path(entry.name).with_suffix(".java")
             if result.returncode != 0 or not source.is_file():
-                yield entry, ValueError(f"CFR batch did not produce {entry.origin}: {details or 'no source produced'}")
+                yield entry, _failure(result, f"CFR batch did not produce {entry.origin}")
             else:
                 try:
                     yield entry, _source(source)

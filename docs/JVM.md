@@ -223,6 +223,27 @@ class invocations; reduce `--threads` or `--batch-size` when memory is constrain
 classes may require a larger heap, for example `--heap-mb 2048`; budget this per
 worker. The same setting applies to batch invocations and isolated retries.
 Changing the heap limit invalidates managed decompilation results on resume.
+For isolated Java heap exhaustion, `export --oom-heap-mb 8192` enables one
+additional attempt with a larger heap (64..8192 MiB, greater than `--heap-mb`).
+This is opt-in. The retry waits for ordinary CFR processes to exit and blocks
+new ones until it finishes; multiple high-heap retries run serially. The maximum
+concurrent configured Java heap is therefore `max(threads * heap_mb, oom_heap_mb)`,
+plus native JVM, Python and archive-cache memory. This controls concurrency,
+not actual RSS or host/container memory. Keep sufficient headroom.
+Only `java.lang.OutOfMemoryError: Java heap space` and `GC overhead limit exceeded`
+are eligible, after an individual attempt. Other failures and timeouts retain
+their existing error behavior. A failed larger-heap attempt still records an
+error and causes exit 1. Its successful source is committed to the same managed
+manifest, so the next matching resume reuses it. The fallback heap enters the
+configuration fingerprint; changing it regenerates managed outputs.
+Retried records include `oom_retries: 1` and `decompiler_heap_mb`; the summary's
+`oom_retries` counts attempts in the current run, excluding reused records.
+
+```sh
+python main.py export large.jar -o /path/to/export --threads 8 --heap-mb 2048 \
+  --oom-heap-mb 8192 --no-enum-switch --no-resources
+```
+
 For large generated enum switch tables, `getclass`/`export --no-enum-switch`
 disables CFR's enum-switch reconstruction. The output retains lowered mapping
 expressions; changing this option invalidates managed sources on resume.

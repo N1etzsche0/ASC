@@ -6,7 +6,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from threading import Barrier
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier, Event
 import unittest
 from unittest.mock import patch
 import zipfile
@@ -16,8 +17,8 @@ sys.path.insert(0, str(ROOT))
 
 from droidasc.jvm.application import JvmApplication, entry_container
 from droidasc.jvm.classfile import ClassFile
-from droidasc.jvm.decompiler import BatchTimeout, decompile_batch
-from droidasc.jvm.exporter import export_sources
+from droidasc.jvm.decompiler import BatchTimeout, HeapFailure, decompile, decompile_batch
+from droidasc.jvm.exporter import _HeapGate, export_sources
 
 
 @unittest.skipUnless(shutil.which("javac"), "JDK required for batch fixtures")
@@ -318,6 +319,112 @@ class JvmBatchTests(unittest.TestCase):
                 list(export_sources(app, Path(temp) / "single", resources=False, limit=1, heap_mb=2048))
                 self.assertEqual(single.call_args.kwargs["heap_mb"], 2048)
 
+    def test_heap_failures_are_typed_but_other_ooms_are_not_retried(self):
+        with tempfile.TemporaryDirectory() as temp, JvmApplication(self.jar) as app:
+            backend = Path(temp) / "fake.jar"
+            backend.write_bytes(b"backend")
+            entry = app.select("batch.One")
+            for message, kind in (("Java heap space", HeapFailure),
+                                  ("GC overhead limit exceeded", HeapFailure),
+                                  ("Metaspace", ValueError)):
+                result = subprocess.CompletedProcess([], 1, "",
+                    "java.lang.OutOfMemoryError: " + message + "\n" + "x" * 5000)
+                with self.subTest(message=message), patch("droidasc.jvm.decompiler.subprocess.run", return_value=result):
+                    with self.assertRaises(kind) as failure:
+                        decompile(app, entry, backend)
+                    self.assertEqual(type(failure.exception), kind)
+                    batch = list(decompile_batch(app, [entry], backend))
+                    self.assertEqual(type(batch[0][1]), kind)
+
+    def test_oom_retry_repairs_managed_output_and_resume_does_not_retry(self):
+        with tempfile.TemporaryDirectory() as temp, JvmApplication(self.jar) as app:
+            output = Path(temp) / "out"
+            stats = {}
+
+            def fail_batch(application, entries, *args, **kwargs):
+                for entry in entries:
+                    yield entry, HeapFailure("Java heap space")
+
+            def recover(application, entry, *args, heap_mb=512, **kwargs):
+                if heap_mb == 512:
+                    raise HeapFailure("Java heap space")
+                self.assertIn(heap_mb, (2048, 4096))
+                return "class recovered {}"
+
+            with patch("droidasc.jvm.exporter.decompile_batch", side_effect=fail_batch), \
+                    patch("droidasc.jvm.exporter.decompile", side_effect=recover) as single:
+                first = list(export_sources(app, output, resources=False, oom_heap_mb=2048, stats=stats))
+                self.assertTrue(all(r["status"] == "ok" and r["oom_retries"] == 1
+                                    and r["decompiler_heap_mb"] == 2048 for r in first))
+                self.assertEqual(single.call_count, 8)
+                self.assertEqual(stats["oom_retries"], 4)
+                second = list(export_sources(app, output, resources=False, oom_heap_mb=2048,
+                                             resume=True, stats=stats))
+                self.assertTrue(all(r["resumed"] for r in second))
+                self.assertEqual(single.call_count, 8)
+                self.assertEqual(stats["oom_retries"], 0)
+                changed = list(export_sources(app, output, resources=False, oom_heap_mb=4096, resume=True))
+                self.assertNotEqual(first[0]["config_hash"], changed[0]["config_hash"])
+                self.assertTrue(all(r["status"] == "ok" and not r["resumed"] for r in changed))
+
+    def test_oom_retry_is_bounded_and_disabled_by_default(self):
+        with tempfile.TemporaryDirectory() as temp, JvmApplication(self.jar) as app:
+            for fallback, failure, calls in ((None, HeapFailure("heap"), 1),
+                                             (2048, HeapFailure("heap"), 2),
+                                             (2048, ValueError("broken class"), 1)):
+                with self.subTest(fallback=fallback, failure=type(failure).__name__), \
+                        patch("droidasc.jvm.exporter.decompile", side_effect=failure) as backend:
+                    output = Path(temp) / str(fallback) / type(failure).__name__
+                    records = list(export_sources(app, output, resources=False, limit=1,
+                                                  oom_heap_mb=fallback))
+                    self.assertEqual(backend.call_count, calls)
+                    self.assertEqual(records[0]["status"], "error")
+                    self.assertEqual(records[0].get("oom_retries", 0), calls - 1)
+            for fallback in (32, 512, 8193):
+                with self.assertRaisesRegex(ValueError, "heap"):
+                    list(export_sources(app, Path(temp) / "invalid", oom_heap_mb=fallback))
+
+    def test_high_heap_retry_excludes_other_cfr_processes_and_releases_on_failure(self):
+        gate = _HeapGate()
+        entered = Event()
+        retry_entered = Event()
+        release = Event()
+        retry_release = Event()
+        normal_entered = Event()
+
+        def normal():
+            with gate.process():
+                entered.set()
+                self.assertTrue(release.wait(5))
+
+        def retry():
+            with gate.process(exclusive=True):
+                retry_entered.set()
+                self.assertTrue(retry_release.wait(5))
+                raise HeapFailure("still exhausted")
+
+        def later():
+            with gate.process():
+                normal_entered.set()
+
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            first = pool.submit(normal)
+            self.assertTrue(entered.wait(5))
+            second = pool.submit(retry)
+            self.assertFalse(retry_entered.wait(0.05))
+            release.set()
+            self.assertTrue(retry_entered.wait(5))
+            third = pool.submit(later)
+            try:
+                self.assertFalse(normal_entered.wait(0.05))
+            finally:
+                retry_release.set()
+            first.result(timeout=5)
+            with self.assertRaises(HeapFailure):
+                second.result(timeout=5)
+            third.result(timeout=5)
+            self.assertTrue(normal_entered.is_set())
+
     def test_enum_switch_profile_reaches_backends_and_invalidates_resume(self):
         with tempfile.TemporaryDirectory() as temp, JvmApplication(self.jar) as app:
             output = Path(temp) / "out"
@@ -342,13 +449,15 @@ class JvmBatchTests(unittest.TestCase):
             command = [sys.executable, str(ROOT / "main.py"), "export", str(self.jar),
                        "-o", str(output), "--no-resources", "--prefix", "batch.One",
                        "--cfr-jar", os.environ["ASC_TEST_CFR_JAR"], "--batch-size", "64", "--heap-mb", "1024",
-                       "--no-enum-switch"]
+                       "--no-enum-switch", "--oom-heap-mb", "2048"]
             first = subprocess.run(command, capture_output=True, text=True, timeout=60)
             self.assertEqual(first.returncode, 0, first.stderr)
             summary = json.loads(first.stderr.splitlines()[-1])
             self.assertEqual(summary["batch_size"], 64)
             self.assertEqual(summary["batch_size_mode"], "explicit")
             self.assertEqual(summary["heap_mb"], 1024)
+            self.assertEqual(summary["oom_heap_mb"], 2048)
+            self.assertEqual(summary["oom_retries"], 0)
             self.assertFalse(summary["decode_enum_switch"])
             records = [json.loads(line) for line in first.stdout.splitlines()]
             self.assertEqual({record["class"] for record in records}, {"Lbatch/One;", "Lbatch/One$Inner;"})

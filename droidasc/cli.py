@@ -144,7 +144,7 @@ def _handle_application(args):
             records = export_sources(application, args.output, args.cfr_jar, args.java, args.timeout,
                                      args.threads, args.prefix, not args.no_resources, args.resume, args.limit,
                                      batch_size=args.batch_size, stats=export_stats, heap_mb=args.heap_mb,
-                                     decode_enum_switch=not args.no_enum_switch)
+                                     decode_enum_switch=not args.no_enum_switch, oom_heap_mb=args.oom_heap_mb)
             out = sys.stdout
             output_fp = None
         elif args.command == "analyze":
@@ -533,6 +533,8 @@ def _build_main_parser():
     export_parser.add_argument("--java", default="java", help="Java executable.")
     export_parser.add_argument("--heap-mb", type=int, default=512,
                                help="CFR heap per process, 64..8192 MiB (default: 512).")
+    export_parser.add_argument("--oom-heap-mb", type=int,
+                               help="Retry an isolated Java heap failure once with this larger heap (max 8192 MiB); pauses other CFR jobs.")
     export_parser.add_argument("--no-enum-switch", action="store_true",
                                help="Retain lowered enum-switch expressions; can reduce generated-class analysis cost.")
     export_parser.add_argument("--timeout", type=float, default=120, help="CFR timeout per batch or isolated retry in seconds.")

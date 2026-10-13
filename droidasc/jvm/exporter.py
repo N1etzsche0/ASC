@@ -1,17 +1,50 @@
 """Bounded, resumable source export with per-origin output and JSONL evidence."""
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 import hashlib
 import json
 from pathlib import Path
 import tempfile
-from threading import Lock, local
+from threading import Condition, Lock, local
 
 from .application import _safe_class_path, safe_relative_path, entry_container
-from .decompiler import decompile, decompile_batch, BatchTimeout, validate_heap_mb
+from .decompiler import decompile, decompile_batch, BatchTimeout, HeapFailure, validate_heap_mb
 from .memory import select_batch_size
 
 MAX_BATCH_BYTES = 32 * 1024 * 1024
+
+
+class _HeapGate:
+    """Drain ordinary CFR jobs before an exclusive high-heap retry."""
+
+    def __init__(self):
+        self.condition = Condition()
+        self.active = 0
+        self.waiting = 0
+        self.exclusive = False
+
+    @contextmanager
+    def process(self, exclusive=False):
+        with self.condition:
+            if exclusive:
+                self.waiting += 1
+                try:
+                    self.condition.wait_for(lambda: not self.active and not self.exclusive)
+                    self.exclusive = True
+                finally:
+                    self.waiting -= 1
+            else:
+                self.condition.wait_for(lambda: not self.exclusive and not self.waiting)
+                self.active += 1
+        try:
+            yield
+        finally:
+            with self.condition:
+                if exclusive:
+                    self.exclusive = False
+                else:
+                    self.active -= 1
+                self.condition.notify_all()
 
 
 def digest(data):
@@ -75,8 +108,13 @@ def rewrite_manifest(path, records):
 
 def export_sources(application, output, cfr_jar=None, java="java", timeout=120,
                    workers=2, prefix=None, resources=True, resume=False, limit=None,
-                   batch_size=None, stats=None, heap_mb=512, decode_enum_switch=True):
+                   batch_size=None, stats=None, heap_mb=512, decode_enum_switch=True,
+                   oom_heap_mb=None):
     validate_heap_mb(heap_mb)
+    if oom_heap_mb is not None:
+        validate_heap_mb(oom_heap_mb)
+        if oom_heap_mb <= heap_mb:
+            raise ValueError("OOM retry heap must be greater than --heap-mb")
     backend_options = {"heap_mb": heap_mb} if heap_mb != 512 else {}
     if not decode_enum_switch:
         backend_options["decode_enum_switch"] = False
@@ -90,6 +128,9 @@ def export_sources(application, output, cfr_jar=None, java="java", timeout=120,
         stats.update(selection)
         stats["heap_mb"] = heap_mb
         stats["decode_enum_switch"] = bool(decode_enum_switch)
+        if oom_heap_mb is not None:
+            stats["oom_heap_mb"] = oom_heap_mb
+            stats["oom_retries"] = 0
     if timeout <= 0:
         raise ValueError("Decompiler timeout must be greater than zero")
     root = Path(output).expanduser().resolve()
@@ -124,6 +165,8 @@ def export_sources(application, output, cfr_jar=None, java="java", timeout=120,
         config["heap_mb"] = heap_mb
     if not decode_enum_switch:
         config["decode_enum_switch"] = False
+    if oom_heap_mb is not None:
+        config["oom_heap_mb"] = oom_heap_mb
     # Dependency changes also invalidate a resumed decompilation result.
     inventory = sorted(str(path) for path in application._seen if path.is_file())
     config["inputs"] = [(path, Path(path).stat().st_size, Path(path).stat().st_mtime_ns)
@@ -137,6 +180,7 @@ def export_sources(application, output, cfr_jar=None, java="java", timeout=120,
     log_lock = Lock()
     reader_lock = Lock()
     worker_state = local()
+    heap_gate = _HeapGate()
 
     def worker_reader():
         if not hasattr(worker_state, "read"):
@@ -149,6 +193,8 @@ def export_sources(application, output, cfr_jar=None, java="java", timeout=120,
     def commit(record):
         # Persist each completed class before the rest of its group can fail.
         with log_lock:
+            if stats is not None and record.get("oom_retries") and not record.get("resumed"):
+                stats["oom_retries"] += record["oom_retries"]
             log.write(json.dumps(record, ensure_ascii=True) + "\n")
             log.flush()
 
@@ -198,8 +244,22 @@ def export_sources(application, output, cfr_jar=None, java="java", timeout=120,
 
         def individual(item):
             try:
-                source = decompile(application, item[0], cfr_jar, java, timeout,
-                                   read_class=read, **backend_options)
+                with heap_gate.process():
+                    source = decompile(application, item[0], cfr_jar, java, timeout,
+                                       read_class=read, **backend_options)
+            except HeapFailure as exc:
+                source = exc
+                if oom_heap_mb is not None:
+                    item[1].update(oom_retries=1, decompiler_heap_mb=oom_heap_mb)
+                    try:
+                        # One attempt, after all ordinary JVMs have exited. Waiting
+                        # retries block new jobs, avoiding starvation and heap sums.
+                        with heap_gate.process(exclusive=True):
+                            source = decompile(application, item[0], cfr_jar, java, timeout,
+                                               read_class=read,
+                                               **{**backend_options, "heap_mb": oom_heap_mb})
+                    except Exception as retry_exc:
+                        source = retry_exc
             except Exception as exc:
                 source = exc
             finish(item, source)
@@ -210,11 +270,12 @@ def export_sources(application, output, cfr_jar=None, java="java", timeout=120,
                 return
             pending = {item[0].origin: item for item in items}
             try:
-                iterator = iter(decompile_batch(application, [item[0] for item in items],
-                                               cfr_jar, java, timeout,
-                                               class_data={item[0].origin: item[2] for item in items},
-                                               read_class=read,
-                                               **backend_options))
+                with heap_gate.process():
+                    iterator = iter(decompile_batch(application, [item[0] for item in items],
+                                                   cfr_jar, java, timeout,
+                                                   class_data={item[0].origin: item[2] for item in items},
+                                                   read_class=read,
+                                                   **backend_options))
             except BatchTimeout as exc:
                 for item in items:
                     finish(item, exc)
@@ -226,7 +287,10 @@ def export_sources(application, output, cfr_jar=None, java="java", timeout=120,
             try:
                 while pending:
                     try:
-                        entry, source = next(iterator)
+                        # The generator runs the JVM on its first next(), before
+                        # yielding any sources. Release the gate before recovery.
+                        with heap_gate.process():
+                            entry, source = next(iterator)
                     except BatchTimeout as exc:
                         # Do not turn one group timeout into N additional timeouts.
                         for item in pending.values():

@@ -48,6 +48,7 @@ def main():
     parser.add_argument("--cfr-jar", type=Path, required=True)
     parser.add_argument("--threads", type=int, default=8)
     parser.add_argument("--heap-mb", type=int, default=512)
+    parser.add_argument("--oom-heap-mb", type=int)
     parser.add_argument("--no-enum-switch", action="store_true")
     parser.add_argument("--run-timeout", type=float, default=1800)
     parser.add_argument("--output", type=Path, required=True)
@@ -64,6 +65,7 @@ def main():
     report = {"input": str(args.input.resolve()), "sha256": hashlib.sha256(args.input.read_bytes()).hexdigest(),
               "cfr_sha256": hashlib.sha256(args.cfr_jar.read_bytes()).hexdigest(),
               "threads": args.threads, "heap_mb": args.heap_mb, "decode_enum_switch": not args.no_enum_switch,
+              "oom_heap_mb": args.oom_heap_mb,
               "cpus": cpus, "batch_size": "auto", "samples": 1,
               "method": "Full export then resume; one process each, no speedup extrapolation. "
                         "Each CFR JVM uses one active processor and the configured heap. "
@@ -77,6 +79,8 @@ def main():
                "-o", str(export_folder / "export")]
     if args.no_enum_switch:
         command += ["--no-enum-switch"]
+    if args.oom_heap_mb is not None:
+        command += ["--oom-heap-mb", str(args.oom_heap_mb)]
     for stage in ("export", "resume"):
         folder = export_folder if stage == "export" else args.output / "resume"
         folder.mkdir(exist_ok=True)

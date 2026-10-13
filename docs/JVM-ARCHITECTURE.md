@@ -53,6 +53,9 @@ context without becoming additional export records.
 4. Stage shared context for pending classes, invoke CFR, and check each expected
    source file. Missing outputs and context failures fall back to individual
    class attempts; a batch timeout records failures without multiplying timeouts.
+   With an explicit larger OOM heap, a typed individual Java heap failure gets
+   one further attempt. A condition gate drains active CFR jobs and blocks new
+   ones during that attempt, preserving a bounded aggregate heap budget.
 5. Replace successful outputs atomically and append their manifest records under
    a lock. The CLI emits JSON Lines when each scheduled group completes and a
    JSON summary on stderr after export.
